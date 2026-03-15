@@ -244,6 +244,7 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--total_steps", type=int, default=50000)
     parser.add_argument("--eval_interval", type=int, default=2500)
+    parser.add_argument("--log_interval", type=int, default=100)
     parser.add_argument("--max_lr", type=float, default=3e-4)
     parser.add_argument("--mhc_dynamic", action="store_true")
     parser.add_argument("--n_experts", type=int, default=8)
