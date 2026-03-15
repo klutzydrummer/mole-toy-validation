@@ -27,6 +27,13 @@ class TrainLogger:
             f.write(json.dumps({"step": step, "val_loss": val_loss, "val_bpc": bpc, "type": "eval"}) + "\n")
         return bpc
 
+    def log_mol_stats(self, step, mol_stats):
+        """Persist MoL expert stats to JSONL so the reporter can track them."""
+        if not mol_stats:
+            return
+        with open(self.log_path, "a") as f:
+            f.write(json.dumps({"step": step, "mol_stats": mol_stats, "type": "mol"}) + "\n")
+
     def print_step(self, step, loss, lr, interval=100):
         if step > 0 and step % interval != 0:
             return

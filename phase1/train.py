@@ -187,6 +187,7 @@ def train(config: str, d: int = 256, n_layers: int = 8, n_heads: int = 8,
                         total_c = sum(counts)
                         pcts = [f"{100*c/total_c:.0f}%" for c in counts] if total_c > 0 else []
                         print(f"      layer {s['layer']} experts: {' '.join(pcts)}")
+                    logger.log_mol_stats(step, mol_stats)
                 _unwrap(model).reset_mol_counts()
 
             if val_bpc < best_val_bpc:

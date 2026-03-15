@@ -11,6 +11,12 @@ set -e
 
 TARGET="${1:-all}"
 
+# Start reporter as a background process — polls checkpoints/*.jsonl every 30s
+# and writes checkpoints/report.md. Killed automatically when this script exits.
+python utils/reporter.py --watch --interval 30 &
+REPORTER_PID=$!
+trap "kill $REPORTER_PID 2>/dev/null; python utils/reporter.py" EXIT
+
 run_config() {
     local cfg="$1"
     echo ""
