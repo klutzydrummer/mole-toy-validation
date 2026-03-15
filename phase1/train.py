@@ -1,0 +1,256 @@
+"""
+Phase 1 Training Script.
+
+Usage:
+  python phase1/train.py --config baseline
+  python phase1/train.py --config mhc
+  python phase1/train.py --config mol
+  python phase1/train.py --config compose
+  python phase1/train.py --config mol --resume
+
+Logs to checkpoints/<config>.jsonl. Saves best + resume checkpoints.
+"""
+
+import argparse
+import os
+import sys
+import time
+import math
+import json
+import torch
+import torch.nn.functional as F
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from phase1.model import ToyTransformer
+from utils.data import get_dataloader
+from utils.metrics import ce_to_bpc, TrainLogger, ParamCounter
+
+
+def get_lr(step, warmup_steps=1000, max_lr=3e-4, min_lr=1e-5, total_steps=50000):
+    if step < warmup_steps:
+        return min_lr + (max_lr - min_lr) * step / warmup_steps
+    progress = (step - warmup_steps) / max(1, total_steps - warmup_steps)
+    progress = min(1.0, progress)
+    return min_lr + 0.5 * (max_lr - min_lr) * (1 + math.cos(math.pi * progress))
+
+
+def _unwrap(model):
+    """Get raw model from compiled wrapper."""
+    return model._orig_mod if hasattr(model, "_orig_mod") else model
+
+
+@torch.no_grad()
+def evaluate(model, val_loader, device, max_batches=50):
+    model.eval()
+    total_loss = 0.0
+    n_batches = 0
+    for x, y in val_loader:
+        if n_batches >= max_batches:
+            break
+        x, y = x.to(device), y.to(device)
+        with torch.autocast(device_type=device.type, dtype=torch.float16,
+                            enabled=(device.type == "cuda")):
+            logits = model(x)
+            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), y.view(-1))
+        total_loss += loss.item()
+        n_batches += 1
+    model.train()
+    return total_loss / max(1, n_batches)
+
+
+def train(config: str, d: int = 256, n_layers: int = 8, n_heads: int = 8,
+          seq_len: int = 512, batch_size: int = 32, total_steps: int = 50000,
+          eval_interval: int = 2500, log_interval: int = 100,
+          max_lr: float = 3e-4, ckpt_dir: str = "checkpoints",
+          mhc_dynamic: bool = False, n_experts: int = 8,
+          mol_rank: int = 4, mol_top_k: int = 2,
+          resume: bool = False, no_compile: bool = False):
+
+    print(f"\n{'='*60}")
+    print(f"Phase 1 Training: config={config}")
+    print(f"{'='*60}\n")
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    use_amp = (device.type == "cuda")
+
+    if device.type == "cpu":
+        print("WARNING: Running on CPU. This will be very slow.")
+        print("Switch to GPU in your Lightning.ai Studio settings.\n")
+
+    # Model
+    model = ToyTransformer(
+        config=config, d=d, n_layers=n_layers, n_heads=n_heads,
+        vocab_size=256, max_len=seq_len + 64,
+        mhc_dynamic=mhc_dynamic, n_experts=n_experts,
+        mol_rank=mol_rank, mol_top_k=mol_top_k,
+    ).to(device)
+
+    n_params = ParamCounter.count(model)
+
+    # Data
+    train_loader = get_dataloader("train", seq_len=seq_len, batch_size=batch_size)
+    val_loader = get_dataloader("val", seq_len=seq_len, batch_size=batch_size)
+
+    # Optimizer
+    optimizer = torch.optim.AdamW(
+        model.parameters(), lr=max_lr, betas=(0.9, 0.95),
+        weight_decay=0.1, fused=(device.type == "cuda"),
+    )
+    scaler = torch.amp.GradScaler(enabled=use_amp)
+
+    # Resume
+    start_step = 0
+    best_val_bpc = float("inf")
+    os.makedirs(ckpt_dir, exist_ok=True)
+    resume_path = os.path.join(ckpt_dir, f"{config}_latest.pt")
+
+    if resume and os.path.exists(resume_path):
+        print(f"Resuming from {resume_path}...")
+        ckpt = torch.load(resume_path, map_location=device, weights_only=False)
+        model.load_state_dict(ckpt["model_state"])
+        optimizer.load_state_dict(ckpt["optimizer_state"])
+        scaler.load_state_dict(ckpt["scaler_state"])
+        start_step = ckpt["step"] + 1
+        best_val_bpc = ckpt.get("best_val_bpc", float("inf"))
+        print(f"  Resumed at step {start_step}, best_val_bpc={best_val_bpc:.4f}")
+
+    # Compile (AFTER resume load)
+    if device.type == "cuda" and not no_compile:
+        try:
+            model = torch.compile(model)
+            print("torch.compile enabled")
+        except Exception as e:
+            print(f"torch.compile failed ({e}), continuing without it")
+
+    # Logger
+    logger = TrainLogger(ckpt_dir, run_name=config)
+
+    # Training loop
+    model.train()
+    train_iter = iter(train_loader)
+    start_time = time.time()
+    log_loss_accum = 0.0
+    log_count = 0
+
+    print(f"Training steps {start_step} -> {total_steps}")
+    print(f"AMP: {use_amp} | batch: {batch_size} | seq_len: {seq_len}")
+    print(f"Train batches/epoch: {len(train_loader)}\n")
+
+    for step in range(start_step, total_steps):
+        try:
+            x, y = next(train_iter)
+        except StopIteration:
+            train_iter = iter(train_loader)
+            x, y = next(train_iter)
+
+        x, y = x.to(device), y.to(device)
+
+        lr = get_lr(step, total_steps=total_steps, max_lr=max_lr)
+        for pg in optimizer.param_groups:
+            pg["lr"] = lr
+
+        optimizer.zero_grad(set_to_none=True)
+        with torch.autocast(device_type=device.type, dtype=torch.float16,
+                            enabled=use_amp):
+            logits = model(x)
+            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), y.view(-1))
+
+        scaler.scale(loss).backward()
+        scaler.unscale_(optimizer)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        scaler.step(optimizer)
+        scaler.update()
+
+        log_loss_accum += loss.item()
+        log_count += 1
+
+        if (step + 1) % log_interval == 0:
+            avg_loss = log_loss_accum / log_count
+            logger.log_step(step, avg_loss, lr)
+            logger.print_step(step, avg_loss, lr, interval=1)
+            log_loss_accum = 0.0
+            log_count = 0
+
+        if (step + 1) % eval_interval == 0:
+            val_loss = evaluate(model, val_loader, device)
+            val_bpc = logger.log_eval(step, val_loss)
+            logger.print_eval(step, val_loss, val_bpc)
+
+            if config in ("mol", "compose"):
+                mol_stats = _unwrap(model).get_mol_stats()
+                if mol_stats:
+                    avg_bal = sum(s["expert_balance"] for s in mol_stats) / len(mol_stats)
+                    print(f"  >>> MoL avg balance: {avg_bal:.3f} (1.0 = perfect)")
+                    for s in [mol_stats[0], mol_stats[-1]]:
+                        counts = s["expert_counts"]
+                        total_c = sum(counts)
+                        pcts = [f"{100*c/total_c:.0f}%" for c in counts] if total_c > 0 else []
+                        print(f"      layer {s['layer']} experts: {' '.join(pcts)}")
+                _unwrap(model).reset_mol_counts()
+
+            if val_bpc < best_val_bpc:
+                best_val_bpc = val_bpc
+                ckpt_path = os.path.join(ckpt_dir, f"{config}_best.pt")
+                torch.save({
+                    "step": step, "model_state": _unwrap(model).state_dict(),
+                    "val_bpc": val_bpc, "config": config, "n_params": n_params,
+                }, ckpt_path)
+                print(f"  >>> New best! Saved to {ckpt_path}")
+
+            torch.save({
+                "step": step,
+                "model_state": _unwrap(model).state_dict(),
+                "optimizer_state": optimizer.state_dict(),
+                "scaler_state": scaler.state_dict(),
+                "best_val_bpc": best_val_bpc,
+            }, resume_path)
+
+    # Final eval
+    val_loss = evaluate(model, val_loader, device, max_batches=200)
+    val_bpc = ce_to_bpc(val_loss)
+    elapsed = time.time() - start_time
+
+    print(f"\n{'='*60}")
+    print(f"Training complete: {config}")
+    print(f"  Steps: {start_step} -> {total_steps}")
+    print(f"  Time: {elapsed/60:.1f} min")
+    print(f"  Final val BPC: {val_bpc:.4f}")
+    print(f"  Best val BPC:  {best_val_bpc:.4f}")
+    print(f"  Params: {n_params:,}")
+    print(f"{'='*60}\n")
+
+    summary = {
+        "config": config, "n_params": n_params,
+        "total_steps": total_steps, "final_val_bpc": val_bpc,
+        "best_val_bpc": best_val_bpc, "elapsed_seconds": elapsed,
+        "d": d, "n_layers": n_layers, "n_heads": n_heads,
+        "seq_len": seq_len, "batch_size": batch_size,
+    }
+    with open(os.path.join(ckpt_dir, f"{config}_summary.json"), "w") as f:
+        json.dump(summary, f, indent=2)
+
+    return best_val_bpc
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Phase 1 Training")
+    parser.add_argument("--config", type=str, default="baseline",
+                        choices=["baseline", "mhc", "mol", "compose"])
+    parser.add_argument("--d", type=int, default=256)
+    parser.add_argument("--n_layers", type=int, default=8)
+    parser.add_argument("--n_heads", type=int, default=8)
+    parser.add_argument("--seq_len", type=int, default=512)
+    parser.add_argument("--batch_size", type=int, default=32)
+    parser.add_argument("--total_steps", type=int, default=50000)
+    parser.add_argument("--eval_interval", type=int, default=2500)
+    parser.add_argument("--max_lr", type=float, default=3e-4)
+    parser.add_argument("--mhc_dynamic", action="store_true")
+    parser.add_argument("--n_experts", type=int, default=8)
+    parser.add_argument("--mol_rank", type=int, default=4)
+    parser.add_argument("--mol_top_k", type=int, default=2)
+    parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--no_compile", action="store_true")
+    args = parser.parse_args()
+
+    train(**vars(args))

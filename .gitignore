@@ -1,0 +1,9 @@
+data/enwik8
+data/enwik8.zip
+data/*.npy
+checkpoints/*.pt
+checkpoints/*.json
+checkpoints/*.jsonl
+__pycache__/
+*.pyc
+.DS_Store
