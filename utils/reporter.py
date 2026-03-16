@@ -113,6 +113,24 @@ def improvement_deceleration(eval_bpcs):
     return False, None
 
 
+def grad_norm_trend(grad_norm_points):
+    """
+    Detect a sustained upward trend in grad norm over the last N points.
+    Returns (is_rising: bool, description: str | None).
+    A gradual rise is concerning; a spike is handled separately.
+    """
+    if len(grad_norm_points) < 20:
+        return False, None
+    recent = [g for _, g in grad_norm_points[-20:]]
+    early  = [g for _, g in grad_norm_points[:20]]
+    avg_recent = sum(recent) / len(recent)
+    avg_early  = sum(early)  / len(early)
+    ratio = avg_recent / avg_early if avg_early > 0 else 1.0
+    if ratio > 1.2 and avg_recent > 0.3:
+        return True, f"grad norm rising: early avg {avg_early:.3f} → recent avg {avg_recent:.3f} ({ratio:.2f}×)"
+    return False, None
+
+
 def detect_loss_spikes(train_records, threshold=1.5):
     """Return list of (step, bpc) where loss spiked > threshold × previous."""
     spikes = []
@@ -175,6 +193,7 @@ def analyze_config(config):
 
     status, bpc_rate = convergence_status(eval_bpcs)
     is_decelerating, decel_desc = improvement_deceleration(eval_bpcs)
+    gnorm_rising, gnorm_trend_desc = grad_norm_trend(grad_norms)
 
     result = {
         "config": config,
@@ -196,6 +215,8 @@ def analyze_config(config):
         "bpc_rate": bpc_rate,
         "is_decelerating": is_decelerating,
         "decel_desc": decel_desc,
+        "gnorm_rising": gnorm_rising,
+        "gnorm_trend_desc": gnorm_trend_desc,
         "progress_pct": 100.0 * (train_records[-1]["step"] if train_records else 0) / TOTAL_STEPS,
     }
 
@@ -258,6 +279,8 @@ def render_report(analyses):
 
         if a["is_decelerating"] and a["decel_desc"]:
             lines.append(f"**⚠ Asymptotic approach detected**: {a['decel_desc']}")
+        if a["gnorm_rising"] and a["gnorm_trend_desc"]:
+            lines.append(f"**⚠ Grad norm trending up**: {a['gnorm_trend_desc']}")
 
         lines.append("")
 
@@ -356,7 +379,8 @@ def render_report(analyses):
         "## Notes for Claude Code",
         "",
         "- **BPC**: lower is better. Baseline target ~1.2–1.4 BPC at 50k steps.",
-        "- **Grad norm**: should decrease gradually. Spikes = instability. Near-zero = vanishing gradients.",
+        "- **Grad norm**: should decrease or plateau. Spikes = instability. Near-zero = vanishing gradients. "
+          "Sustained rise (>1.2× early avg) flagged as ⚠ — watch for acceleration past ~1.0.",
         "- **Train/val gap**: val BPC - train BPC. Positive (val > train) is normal (generalization gap). "
           "Negative (train > val) flags data or eval issues.",
         "- **Asymptotic approach**: improvement rate halving signals you're near the model's floor for this data/size.",
