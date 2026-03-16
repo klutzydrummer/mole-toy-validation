@@ -11,20 +11,16 @@ set -e
 
 TARGET="${1:-all}"
 
-# Start reporter as a background process — polls checkpoints/*.jsonl every 30s
-# and writes checkpoints/report.md. Uses a PID file to prevent duplicates.
-REPORTER_PIDFILE="checkpoints/.reporter.pid"
+# Kill any stale reporter processes before starting a fresh one.
 mkdir -p checkpoints
-if [ -f "$REPORTER_PIDFILE" ] && kill -0 "$(cat "$REPORTER_PIDFILE")" 2>/dev/null; then
-    echo "Reporter already running (PID $(cat "$REPORTER_PIDFILE")) — skipping."
-    REPORTER_PID=$(cat "$REPORTER_PIDFILE")
-    trap "" EXIT  # don't kill a reporter we didn't start
-else
-    python utils/reporter.py --watch --interval 30 &
-    REPORTER_PID=$!
-    echo "$REPORTER_PID" > "$REPORTER_PIDFILE"
-    trap "kill $REPORTER_PID 2>/dev/null; rm -f '$REPORTER_PIDFILE'; python utils/reporter.py" EXIT
-fi
+bash utils/kill_reporter.sh
+
+# Start a fresh reporter background process.
+REPORTER_PIDFILE="checkpoints/.reporter.pid"
+python utils/reporter.py --watch --interval 30 &
+REPORTER_PID=$!
+echo "$REPORTER_PID" > "$REPORTER_PIDFILE"
+trap "kill $REPORTER_PID 2>/dev/null; rm -f '$REPORTER_PIDFILE'; python utils/reporter.py" EXIT
 
 run_config() {
     local cfg="$1"
