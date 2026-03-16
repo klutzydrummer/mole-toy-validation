@@ -201,7 +201,10 @@ def analyze_config(config):
         "current_bpc": train_records[-1]["bpc"] if train_records else None,
         "current_lr": train_records[-1]["lr"] if train_records else None,
         "eval_bpcs": eval_bpcs,
-        "best_val_bpc": min((b for _, b in eval_bpcs), default=None),
+        # Prefer the 200-batch final eval from summary.json when available;
+        # fall back to best in-training eval (50-batch) for in-progress runs.
+        "best_val_bpc": (summary["final_val_bpc"] if summary else
+                         min((b for _, b in eval_bpcs), default=None)),
         "spikes": detect_loss_spikes(train_records),
         "summary": summary,
         "mol_records": mol_records,
@@ -378,7 +381,8 @@ def render_report(analyses):
     lines += [
         "## Notes for Claude Code",
         "",
-        "- **BPC**: lower is better. Baseline target ~1.2–1.4 BPC at 50k steps.",
+        "- **BPC**: lower is better. Baseline target ~1.2–1.4 BPC at 50k steps. "
+          "Completed runs show `final_val_bpc` (200-batch eval); in-progress runs show best in-training val BPC (50-batch).",
         "- **Grad norm**: should decrease or plateau. Spikes = instability. Near-zero = vanishing gradients. "
           "Sustained rise (>1.2× early avg) flagged as ⚠ — watch for acceleration past ~1.0.",
         "- **Train/val gap**: val BPC - train BPC. Positive (val > train) is normal (generalization gap). "
