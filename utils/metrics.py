@@ -17,9 +17,12 @@ class TrainLogger:
         self._last_time = time.time()
         self._last_step = 0
 
-    def log_step(self, step, loss, lr=0.0):
+    def log_step(self, step, loss, lr=0.0, grad_norm=None):
+        record = {"step": step, "loss": loss, "bpc": ce_to_bpc(loss), "lr": lr}
+        if grad_norm is not None:
+            record["grad_norm"] = grad_norm
         with open(self.log_path, "a") as f:
-            f.write(json.dumps({"step": step, "loss": loss, "bpc": ce_to_bpc(loss), "lr": lr}) + "\n")
+            f.write(json.dumps(record) + "\n")
 
     def log_eval(self, step, val_loss):
         bpc = ce_to_bpc(val_loss)
@@ -34,13 +37,14 @@ class TrainLogger:
         with open(self.log_path, "a") as f:
             f.write(json.dumps({"step": step, "mol_stats": mol_stats, "type": "mol"}) + "\n")
 
-    def print_step(self, step, loss, lr, interval=100):
+    def print_step(self, step, loss, lr, grad_norm=None, interval=100):
         if step > 0 and step % interval != 0:
             return
         elapsed = time.time() - self._last_time
         steps = step - self._last_step
         sps = steps / elapsed if elapsed > 0 and steps > 0 else 0
-        print(f"step {step:>6d} | loss {loss:.4f} | bpc {ce_to_bpc(loss):.4f} | lr {lr:.2e} | {sps:.1f} steps/s")
+        gnorm_str = f" | gnorm {grad_norm:.3f}" if grad_norm is not None else ""
+        print(f"step {step:>6d} | loss {loss:.4f} | bpc {ce_to_bpc(loss):.4f} | lr {lr:.2e}{gnorm_str} | {sps:.1f} steps/s")
         self._last_time = time.time()
         self._last_step = step
 

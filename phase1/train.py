@@ -158,7 +158,7 @@ def train(config: str, d: int = 256, n_layers: int = 8, n_heads: int = 8,
 
         scaler.scale(loss).backward()
         scaler.unscale_(optimizer)
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0).item()
         scaler.step(optimizer)
         scaler.update()
 
@@ -167,8 +167,8 @@ def train(config: str, d: int = 256, n_layers: int = 8, n_heads: int = 8,
 
         if (step + 1) % log_interval == 0:
             avg_loss = log_loss_accum / log_count
-            logger.log_step(step, avg_loss, lr)
-            logger.print_step(step, avg_loss, lr, interval=1)
+            logger.log_step(step, avg_loss, lr, grad_norm)
+            logger.print_step(step, avg_loss, lr, grad_norm, interval=1)
             log_loss_accum = 0.0
             log_count = 0
 
