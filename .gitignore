@@ -5,6 +5,8 @@ checkpoints/*.pt
 checkpoints/*.json
 checkpoints/*.jsonl
 !checkpoints/report.md
+checkpoints/report.md.tmp
+checkpoints/.reporter.pid
 __pycache__/
 *.pyc
 .DS_Store

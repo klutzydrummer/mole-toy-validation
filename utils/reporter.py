@@ -378,8 +378,11 @@ def run_once():
         print("No training data found in checkpoints/. Run training first.")
         return
     report = render_report(analyses)
-    with open(REPORT_PATH, "w") as f:
+    # Write to a temp file then rename — atomic on POSIX, prevents partial reads
+    tmp = REPORT_PATH + ".tmp"
+    with open(tmp, "w") as f:
         f.write(report)
+    os.replace(tmp, REPORT_PATH)
     print(f"Report written to {REPORT_PATH}")
 
 
