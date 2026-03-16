@@ -26,6 +26,15 @@ from phase1.model import ToyTransformer
 from utils.data import get_dataloader
 from utils.metrics import ce_to_bpc, TrainLogger, ParamCounter
 
+# LightningLogger is only available inside Lightning.ai Studios — degrade gracefully elsewhere.
+try:
+    from litlogger import LightningLogger as _LightningLogger
+    def make_lit_logger(name, teamspace):
+        return _LightningLogger(name=name, teamspace=teamspace)
+except Exception:
+    def make_lit_logger(name, teamspace):
+        return None
+
 
 def get_lr(step, warmup_steps=1000, max_lr=3e-4, min_lr=1e-5, total_steps=50000):
     if step < warmup_steps:
@@ -65,7 +74,8 @@ def train(config: str, d: int = 256, n_layers: int = 8, n_heads: int = 8,
           max_lr: float = 3e-4, ckpt_dir: str = "checkpoints",
           mhc_dynamic: bool = False, n_experts: int = 8,
           mol_rank: int = 4, mol_top_k: int = 2,
-          resume: bool = False, no_compile: bool = False):
+          resume: bool = False, no_compile: bool = False,
+          teamspace: str = "mole-toy-validation-project"):
 
     print(f"\n{'='*60}")
     print(f"Phase 1 Training: config={config}")
@@ -123,8 +133,18 @@ def train(config: str, d: int = 256, n_layers: int = 8, n_heads: int = 8,
         except Exception as e:
             print(f"torch.compile failed ({e}), continuing without it")
 
-    # Logger
+    # Local JSONL logger (always active)
     logger = TrainLogger(ckpt_dir, run_name=config)
+
+    # Lightning.ai experiment tracker (active when running in a Studio)
+    lit = make_lit_logger(name=f"phase1-{config}", teamspace=teamspace)
+    if lit is not None:
+        lit.log_hyperparams({
+            "config": config, "d": d, "n_layers": n_layers, "n_heads": n_heads,
+            "seq_len": seq_len, "batch_size": batch_size, "total_steps": total_steps,
+            "max_lr": max_lr, "n_params": n_params,
+        })
+        print("LightningLogger active — metrics streaming to Teamspace")
 
     # Training loop
     model.train()
@@ -169,6 +189,9 @@ def train(config: str, d: int = 256, n_layers: int = 8, n_heads: int = 8,
             avg_loss = log_loss_accum / log_count
             logger.log_step(step, avg_loss, lr, grad_norm)
             logger.print_step(step, avg_loss, lr, grad_norm, interval=1)
+            if lit is not None:
+                lit.log_metrics({"train/loss": avg_loss, "train/bpc": ce_to_bpc(avg_loss),
+                                 "train/lr": lr, "train/grad_norm": grad_norm}, step=step)
             log_loss_accum = 0.0
             log_count = 0
 
@@ -176,6 +199,8 @@ def train(config: str, d: int = 256, n_layers: int = 8, n_heads: int = 8,
             val_loss = evaluate(model, val_loader, device)
             val_bpc = logger.log_eval(step, val_loss)
             logger.print_eval(step, val_loss, val_bpc)
+            if lit is not None:
+                lit.log_metrics({"val/loss": val_loss, "val/bpc": val_bpc}, step=step)
 
             if config in ("mol", "compose"):
                 mol_stats = _unwrap(model).get_mol_stats()
@@ -188,6 +213,8 @@ def train(config: str, d: int = 256, n_layers: int = 8, n_heads: int = 8,
                         pcts = [f"{100*c/total_c:.0f}%" for c in counts] if total_c > 0 else []
                         print(f"      layer {s['layer']} experts: {' '.join(pcts)}")
                     logger.log_mol_stats(step, mol_stats)
+                    if lit is not None:
+                        lit.log_metrics({"mol/avg_balance": avg_bal}, step=step)
                 _unwrap(model).reset_mol_counts()
 
             if val_bpc < best_val_bpc:
@@ -231,6 +258,10 @@ def train(config: str, d: int = 256, n_layers: int = 8, n_heads: int = 8,
     with open(os.path.join(ckpt_dir, f"{config}_summary.json"), "w") as f:
         json.dump(summary, f, indent=2)
 
+    if lit is not None:
+        lit.log_metrics({"final/best_val_bpc": best_val_bpc, "final/val_bpc": val_bpc})
+        lit.finalize()
+
     return best_val_bpc
 
 
@@ -253,6 +284,8 @@ if __name__ == "__main__":
     parser.add_argument("--mol_top_k", type=int, default=2)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--no_compile", action="store_true")
+    parser.add_argument("--teamspace", type=str, default="mole-toy-validation-project",
+                        help="Lightning.ai Teamspace name for experiment tracking")
     args = parser.parse_args()
 
     train(**vars(args))
