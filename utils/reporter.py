@@ -124,11 +124,13 @@ def detect_loss_spikes(train_records, threshold=1.5):
 
 
 def sample_curve(points, n=25):
-    """Downsample a list of (step, val) to at most n evenly-spaced points."""
-    if len(points) <= n:
-        return points
-    step = len(points) // n
-    return points[::step]
+    """Deduplicate by step (last write wins), sort, then downsample to n points."""
+    deduped = dict(points)  # last value for each step wins
+    ordered = sorted(deduped.items())  # sort by step
+    if len(ordered) <= n:
+        return ordered
+    stride = len(ordered) // n
+    return ordered[::stride]
 
 
 def train_bpc_at_step(train_records, target_step, window=3):
