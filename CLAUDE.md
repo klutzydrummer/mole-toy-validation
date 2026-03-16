@@ -76,3 +76,131 @@ Base config: `d=256, n_layers=8, n_heads=8, SwiGLU, RoPE, RMSNorm, weight-tying`
 mHC adds: `n=2 streams`, stream expand at embed → stream collapse (learned softmax weights) before lm_head.
 
 MoL replaces SwiGLU with: `8 experts, top-2, rank-4 LoRA`, shared LoRA always active, per-expert LoRA weighted by unbiased router scores.
+
+---
+
+## Phase 2 Plan: HDC (Hierarchical Dynamic Chunking)
+
+Phase 2 wraps the existing `mol` inner network with Zone E (encoder + router) and Zone D
+(de-chunker + decoder). This is the A1 gate ablation — does content-aware compression at
+R=4 improve BPC over mol alone (1.3357)?
+
+### Phase 1 findings informing Phase 2
+
+- **mol** is the best Phase 1 config (1.3357 BPC). It is the inner network for all Phase 2 runs.
+- **mHC** had a rising grad norm trend (0.54→0.70, 1.29×) and lost to baseline. Run a diagnostic
+  before composing mHC with HDC: `python phase1/train.py --config mhc --max_lr 1.5e-4 --total_steps 25000`
+  and again at `--max_lr 7.5e-5`. No new code required.
+- **compose** had a composition penalty vs mol alone (0.0029 BPC worse). Do not compose mHC+MoL+HDC
+  until mHC's optimization issue is resolved.
+
+### New files for Phase 2
+
+```
+phase2/model.py     HDCModel + ZoneE + ZoneD + BoundaryRouter + CausalRecurrenceLayer
+phase2/train.py     Dual-loss training loop (loss_ntp + λ_comp * loss_comp)
+phase2/reporter.py  Extended reporter: HDC health metrics, per-position loss analysis
+```
+
+Do NOT modify `phase1/model.py` or `phase1/train.py`.
+
+### Phase 2 configs (run in this order)
+
+| Config | What it tests | Run order |
+|--------|---------------|-----------|
+| `hdc_rulebased` | Cosine threshold, no learned router — validates pipeline | 1st — always |
+| `hdc_gate` | Learned router, LM gradients flow (H-Net style) | 2nd |
+| `hdc_stride` | Fixed-stride pooling — lower bound on routing value | 3rd |
+| `hdc_r2` / `hdc_r8` | Compression ratio sweep (A2) | After A1 passes |
+| `hdc_e2e` | Full end-to-end boundary training (A5 comparison) | After A1 |
+| `hdc_meanpool` | Mean-pool + cross-attention decoder (A10 comparison) | After A1 |
+
+**`hdc_rulebased` must run first.** It validates that Zone E, inner network, and Zone D all work
+correctly before adding the complexity of a learned router. If `hdc_rulebased` doesn't beat or
+match `mol`, the pipeline is broken — fix it before adding routing.
+
+### CausalRecurrenceLayer — correct Hawk/Griffin RG-LRU formula
+
+Used in Zone E and Zone D outer networks (d/4 = 64). Based on Griffin (arXiv:2402.19427).
+
+```python
+# Correct formula — the sqrt normalization term is NOT optional
+r_t = sigmoid(W_r · x_t)                         # recurrence gate
+i_t = sigmoid(W_i · x_t)                         # input gate
+a_t = sigmoid(log_a)^(8 * r_t)                   # decay, init log_a s.t. a ∈ [0.9, 0.999]
+h_t = a_t * h_{t-1} + sqrt(1 - a_t²) * (i_t * x_t)  # ← sqrt term required for norm conservation
+```
+
+**Common mistake**: omitting `sqrt(1 - a_t²)`. Without it, hidden state norm can grow
+unboundedly at small d=64. The normalization ensures `E[||h_t||²]` stays bounded.
+
+**Init**: `log_a` initialized so that `a^8 ∈ [0.9, 0.999]` (not centered at 0.5). This gives
+the layer long initial memory, which is appropriate for an outer encoder building context.
+
+If `mamba-ssm` is available in the environment, use Mamba-2 instead — H-Net's ablations
+(Appendix E) show Mamba-2 significantly outperforms Griffin-style layers for outer networks.
+
+### BoundaryRouter — correct design per H-Net + DLCM
+
+```python
+# Correct: compare current token to IMMEDIATELY PRECEDING key (not EMA)
+q_t = normalize(W_q · encoder_t)
+k_t = normalize(W_k · encoder_t)
+p_t = (1 - dot(q_t, k_{t-1})) / 2    # ← k_{t-1}, not k_ema_t
+```
+
+**Why adjacent key, not EMA**: EMA dilutes the sharp local-contrast signal that detects boundaries.
+H-Net and DLCM both use adjacent-token comparison. The EMA approach has no literature validation.
+
+**Gradient isolation is NOT the default**. The plan described an "isolated gradient" design where
+the router only receives gradient from `loss_comp`. Literature analysis shows this produces
+approximately-periodic (near-random) boundaries that satisfy the compression ratio but are not
+content-aware. Two validated alternatives:
+
+| Approach | Routing | Gradient to router | Stability | Config |
+|----------|---------|-------------------|-----------|--------|
+| DLCM rule-based | Cosine threshold (no learned params) | N/A | Highest | `hdc_rulebased` |
+| H-Net e2e | Learned (W_q, W_k) | LM loss + comp loss | Good with careful LR | `hdc_gate` |
+| Isolated (ours) | Learned (W_q, W_k) | comp loss only | Unknown — no prior art | `hdc_e2e_isolated` (A5) |
+
+The default for `hdc_gate` is the H-Net approach: LM gradients flow through differentiable
+smoothing. Use a separate, lower LR for router params (1e-4 vs main 3e-4).
+
+**STE for hard selection**: `mask_ste = mask_hard + p_t - p_t.detach()`. H-Net notes this
+"provides additional stabilization but is not required." Use it.
+
+**Compression regularizer**: `loss_comp = (mean(boundary_probs) - 1/R)²`, `λ_comp = 0.1`.
+Monitor `compression_ratio` metric — if it drifts >30% from target, raise `λ_comp` to 0.5.
+
+### Zone E — sparse vs. dense RoPE positions
+
+**Default: dense re-indexing** (concept tokens become positions 1, 2, 3... in compressed sequence).
+This matches H-Net's design and is the validated approach for causal LM.
+
+**Sparse indexing** (concept tokens keep their original positions 1, 7, 13...) is the DC-DiT
+approach, validated for 2D vision but not causal LM. Add this as ablation A-new after A1 passes.
+Do not default to it.
+
+### Zone D — validated design (matches H-Net exactly)
+
+```
+EMA smoothing (H-Net Eq. 5):  h̄_i = p_i * concept_i + (1-p_i) * h̄_{i-1}
+Plug-back     (H-Net Eq. 8):  h̃_j = h̄_{nearest boundary at or before j}
+Gated residual (H-Net Eq. 3): h_j = (1 - p_j) * gate(encoder_out_j) + h̃_j
+```
+
+This is the best-validated component. Non-boundary tokens lean on the Zone E skip connection
+(encoder_out), preventing the U-shaped loss pattern (mid-chunk tokens degrading). The
+`(1 - p_j)` weighting is a refinement over plain H-Net Eq. 3 that makes this more principled.
+
+### Success criteria for A1
+
+- **Primary**: `hdc_gate` val BPC < 1.3357 (mol baseline)
+- **Secondary**: compression ratio stable near 4×, `boundary_entropy` decreasing over training,
+  `mid_chunk_bpc - boundary_bpc < 0.1`
+- **Pipeline validation**: `hdc_rulebased` runs to completion without NaN/divergence
+
+### New metrics to log (phase2/train.py)
+
+Per step: `compression_ratio` (M/L), `loss_comp`, `boundary_entropy`
+Per eval: `boundary_bpc`, `mid_chunk_bpc` (per-position loss breakdown)
