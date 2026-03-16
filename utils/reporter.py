@@ -17,7 +17,10 @@ from datetime import datetime
 
 CKPT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "checkpoints")
 REPORT_PATH = os.path.join(CKPT_DIR, "report.md")
-CONFIGS = ["baseline", "mhc", "mol", "compose"]
+
+PHASE1_CONFIGS = ["baseline", "mhc", "mol", "compose"]
+PHASE2_CONFIGS = ["hdc_rulebased", "hdc_gate", "hdc_stride", "hdc_r2", "hdc_r8", "hdc_e2e_isolated"]
+CONFIGS = PHASE1_CONFIGS + PHASE2_CONFIGS
 TOTAL_STEPS = 50000
 
 
@@ -171,20 +174,20 @@ def analyze_config(config):
     train_records = [r for r in records if "type" not in r]
     eval_records  = [r for r in records if r.get("type") == "eval"]
     mol_records   = [r for r in records if r.get("type") == "mol"]
+    hdc_records   = [r for r in records if r.get("type") == "hdc"]
+    pos_records   = [r for r in records if r.get("type") == "pos_loss"]
 
     if not records:
         return None
 
     eval_bpcs = [(r["step"], r["val_bpc"]) for r in eval_records]
 
-    # Grad norm: smooth over all logged steps
     grad_norms = [(r["step"], r["grad_norm"]) for r in train_records if "grad_norm" in r]
     recent_gnorm = None
     if grad_norms:
         recent = [g for _, g in grad_norms[-10:]]
         recent_gnorm = sum(recent) / len(recent)
 
-    # Train/val gap at each eval point
     train_val_gaps = []
     for step, val_bpc in eval_bpcs:
         t_bpc = train_bpc_at_step(train_records, step)
@@ -195,14 +198,49 @@ def analyze_config(config):
     is_decelerating, decel_desc = improvement_deceleration(eval_bpcs)
     gnorm_rising, gnorm_trend_desc = grad_norm_trend(grad_norms)
 
+    # HDC-specific metrics (Phase 2 only)
+    hdc_health = {}
+    if hdc_records:
+        recent_hdc = hdc_records[-10:]
+        hdc_health["compression_ratio"] = sum(r.get("compression_ratio", 0) for r in recent_hdc) / len(recent_hdc)
+        hdc_health["loss_comp"]         = sum(r.get("loss_comp", 0) for r in recent_hdc) / len(recent_hdc)
+        hdc_health["boundary_entropy"]  = sum(r.get("boundary_entropy", 0) for r in recent_hdc) / len(recent_hdc)
+        hdc_health["ratio_curve"]       = sample_curve(
+            [(r["step"], r["compression_ratio"]) for r in hdc_records if "compression_ratio" in r], n=15
+        )
+        hdc_health["entropy_curve"]     = sample_curve(
+            [(r["step"], r["boundary_entropy"]) for r in hdc_records if "boundary_entropy" in r], n=15
+        )
+        # Compression ratio stability: std of recent ratios
+        recent_ratios = [r.get("compression_ratio", 0) for r in recent_hdc]
+        mean_r = sum(recent_ratios) / len(recent_ratios)
+        hdc_health["ratio_std"] = math.sqrt(sum((r - mean_r)**2 for r in recent_ratios) / len(recent_ratios))
+        # Target ratio from config name
+        if "r2" in config:
+            hdc_health["target_ratio"] = 0.5
+        elif "r8" in config:
+            hdc_health["target_ratio"] = 0.125
+        else:
+            hdc_health["target_ratio"] = 0.25
+
+    pos_health = {}
+    if pos_records:
+        latest = pos_records[-1]
+        pos_health["boundary_bpc"] = latest.get("boundary_bpc")
+        pos_health["midchunk_bpc"] = latest.get("midchunk_bpc")
+        pos_health["step"]         = latest.get("step")
+        pos_health["curve"]        = [
+            (r["step"], r.get("boundary_bpc"), r.get("midchunk_bpc"))
+            for r in pos_records if "boundary_bpc" in r
+        ]
+
     result = {
         "config": config,
+        "phase": 2 if config in PHASE2_CONFIGS else 1,
         "current_step": train_records[-1]["step"] if train_records else 0,
-        "current_bpc": train_records[-1]["bpc"] if train_records else None,
-        "current_lr": train_records[-1]["lr"] if train_records else None,
+        "current_bpc":  train_records[-1]["bpc"]  if train_records else None,
+        "current_lr":   train_records[-1]["lr"]   if train_records else None,
         "eval_bpcs": eval_bpcs,
-        # Prefer the 200-batch final eval from summary.json when available;
-        # fall back to best in-training eval (50-batch) for in-progress runs.
         "best_val_bpc": (summary["final_val_bpc"] if summary else
                          min((b for _, b in eval_bpcs), default=None)),
         "spikes": detect_loss_spikes(train_records),
@@ -212,15 +250,17 @@ def analyze_config(config):
             [(r["step"], r["bpc"]) for r in train_records if "bpc" in r], n=25
         ),
         "grad_norm_curve": sample_curve(grad_norms, n=25),
-        "recent_gnorm": recent_gnorm,
+        "recent_gnorm":  recent_gnorm,
         "train_val_gaps": train_val_gaps,
-        "status": status,
-        "bpc_rate": bpc_rate,
+        "status":         status,
+        "bpc_rate":       bpc_rate,
         "is_decelerating": is_decelerating,
-        "decel_desc": decel_desc,
-        "gnorm_rising": gnorm_rising,
+        "decel_desc":      decel_desc,
+        "gnorm_rising":    gnorm_rising,
         "gnorm_trend_desc": gnorm_trend_desc,
         "progress_pct": 100.0 * (train_records[-1]["step"] if train_records else 0) / TOTAL_STEPS,
+        "hdc_health": hdc_health,
+        "pos_health":  pos_health,
     }
 
     if mol_records:
@@ -243,12 +283,21 @@ STATUS_ICON = {
     "insufficient data": "…",
 }
 
-# Expected outcome per config: (beat_baseline, description)
+# Expected outcome per config: (beat_baseline_config, description)
+# beat_baseline_config = name of the config this should beat, or None
 _CONFIG_HYPOTHESIS = {
-    "baseline": (None,  "Control. Vanilla transformer. Target ~1.2–1.4 BPC at 50k steps."),
-    "mhc":      (True,  "Should beat baseline: mHC multi-stream residual adds representational diversity."),
-    "mol":      (True,  "Should beat baseline: MoL sparse experts add capacity without proportional cost."),
-    "compose":  (True,  "Should beat both mhc and mol: additive gains expected if components are orthogonal."),
+    # Phase 1
+    "baseline":         (None,           "Control. Vanilla transformer. Target ~1.2–1.4 BPC at 50k steps."),
+    "mhc":              ("baseline",     "Should beat baseline: mHC multi-stream residual adds representational diversity."),
+    "mol":              ("baseline",     "Should beat baseline: MoL sparse experts add capacity without proportional cost."),
+    "compose":          ("mol",          "Should beat mol: additive gains if mHC and MoL are orthogonal."),
+    # Phase 2 — all compared against mol (best Phase 1 config, inner network for HDC)
+    "hdc_rulebased":    ("mol",          "Pipeline validation. Rule-based cosine routing. Should match or beat mol if HDC helps at all."),
+    "hdc_gate":         ("hdc_rulebased","Learned e2e routing (H-Net style). Should beat hdc_rulebased if content-aware boundaries help."),
+    "hdc_stride":       (None,           "Fixed-stride lower bound. Expected to lose to hdc_rulebased. Shows value of any routing signal."),
+    "hdc_r2":           ("hdc_gate",     "R=2 compression sweep. Less compression — may trade throughput for quality."),
+    "hdc_r8":           ("hdc_gate",     "R=8 compression sweep. More compression — tests limits of concept formation."),
+    "hdc_e2e_isolated": (None,           "A5 comparison: gradient isolation. Expected near-random boundaries. Should match hdc_stride."),
 }
 
 
@@ -259,71 +308,117 @@ def key_findings(analyses):
     if not complete:
         return findings
 
-    ranked = sorted(complete, key=lambda a: a["best_val_bpc"])
+    ranked   = sorted(complete, key=lambda a: a["best_val_bpc"])
     baseline = next((a for a in analyses if a["config"] == "baseline"), None)
-    mol     = next((a for a in analyses if a["config"] == "mol"), None)
-    mhc     = next((a for a in analyses if a["config"] == "mhc"), None)
-    compose = next((a for a in analyses if a["config"] == "compose"), None)
+    mol      = next((a for a in analyses if a["config"] == "mol"),      None)
+    mhc      = next((a for a in analyses if a["config"] == "mhc"),      None)
+    compose  = next((a for a in analyses if a["config"] == "compose"),  None)
 
-    # Winner
+    p1_complete = [a for a in complete if a["phase"] == 1]
+    p2_complete = [a for a in complete if a["phase"] == 2]
+
+    # Overall winner
     winner = ranked[0]
     if baseline and winner["config"] != "baseline":
         delta = baseline["best_val_bpc"] - winner["best_val_bpc"]
         findings.append(
-            f"**Best config: `{winner['config']}`** at {winner['best_val_bpc']:.4f} BPC "
+            f"**Best overall: `{winner['config']}`** at {winner['best_val_bpc']:.4f} BPC "
             f"(+{delta:.4f} over baseline)."
         )
-    elif baseline:
+    elif baseline and len(complete) > 1:
         findings.append(
-            f"**No config beat baseline** ({baseline['best_val_bpc']:.4f} BPC). "
-            f"All modifications regressed or were neutral."
+            f"**No config beat baseline** ({baseline['best_val_bpc']:.4f} BPC)."
         )
 
-    # mHC vs baseline
+    # Phase 1: mHC vs baseline
     if mhc and baseline and mhc["best_val_bpc"] and baseline["best_val_bpc"]:
         delta = mhc["best_val_bpc"] - baseline["best_val_bpc"]
         if delta > 0.001:
             findings.append(
-                f"**mHC regressed vs baseline** ({delta:+.4f} BPC). "
-                f"Architecture may need LR tuning — see grad norm trend."
+                f"**mHC regressed vs baseline** ({delta:+.4f} BPC) — see grad norm trend."
             )
         elif delta < -0.001:
-            findings.append(
-                f"**mHC improved vs baseline** ({delta:+.4f} BPC). "
-                f"Multi-stream residual provides measurable benefit at this scale."
-            )
+            findings.append(f"**mHC improved vs baseline** ({delta:+.4f} BPC).")
         else:
-            findings.append(f"**mHC neutral vs baseline** ({delta:+.4f} BPC, within noise).")
+            findings.append(f"**mHC neutral vs baseline** ({delta:+.4f} BPC).")
 
-    # Composition penalty/benefit
+    # Phase 1: composition
     if mol and compose and mol["best_val_bpc"] and compose["best_val_bpc"]:
         penalty = compose["best_val_bpc"] - mol["best_val_bpc"]
         if penalty > 0.001:
             findings.append(
-                f"**Composition penalty: compose is {penalty:.4f} BPC worse than mol alone.** "
-                f"mHC interferes with MoL when combined — investigate before scaling."
+                f"**Composition penalty** ({penalty:+.4f} BPC): compose worse than mol alone — "
+                f"mHC interferes with MoL."
             )
         elif penalty < -0.001:
+            findings.append(f"**Composition benefit** ({penalty:+.4f} BPC): mHC+MoL better than MoL alone.")
+        else:
+            findings.append(f"**Composition neutral** ({penalty:+.4f} BPC).")
+
+    # Phase 2: A1 gate result
+    hdc_ruled = next((a for a in analyses if a["config"] == "hdc_rulebased"), None)
+    hdc_gate  = next((a for a in analyses if a["config"] == "hdc_gate"),      None)
+    hdc_stride = next((a for a in analyses if a["config"] == "hdc_stride"),   None)
+    if mol and hdc_ruled and hdc_ruled["best_val_bpc"] and mol["best_val_bpc"]:
+        delta = mol["best_val_bpc"] - hdc_ruled["best_val_bpc"]
+        if delta > 0.001:
             findings.append(
-                f"**Composition benefit**: compose is {abs(penalty):.4f} BPC better than mol alone — "
-                f"components are complementary."
+                f"**A1 gate: HDC helps** — hdc_rulebased beats mol by {delta:.4f} BPC. "
+                f"Chunking adds value even with rule-based boundaries."
+            )
+        elif delta < -0.001:
+            findings.append(
+                f"**A1 gate: HDC regressed** ({-delta:.4f} BPC worse than mol). "
+                f"Pipeline or compression ratio may need tuning — see Section 14.1 diagnostics."
             )
         else:
+            findings.append(f"**A1 gate: HDC neutral vs mol** ({delta:+.4f} BPC).")
+
+    if hdc_gate and hdc_ruled and hdc_gate["best_val_bpc"] and hdc_ruled["best_val_bpc"]:
+        delta = hdc_ruled["best_val_bpc"] - hdc_gate["best_val_bpc"]
+        if delta > 0.001:
             findings.append(
-                f"**Composition neutral** (compose vs mol: {penalty:+.4f} BPC). "
-                f"mHC adds no harm but no gain on top of MoL."
+                f"**Learned routing helps** — hdc_gate beats hdc_rulebased by {delta:.4f} BPC. "
+                f"Content-aware boundaries outperform cosine threshold."
+            )
+        elif delta < -0.001:
+            findings.append(
+                f"**Learned routing regressed** ({-delta:.4f} BPC worse than rule-based). "
+                f"Router may not be learning content-aware boundaries."
             )
 
-    # Hypothesis validation
-    for a in complete:
-        expected_better, _ = _CONFIG_HYPOTHESIS.get(a["config"], (None, ""))
-        if expected_better is None or not baseline:
+    # Phase 2: HDC health alerts
+    for a in [a for a in analyses if a["phase"] == 2]:
+        h = a.get("hdc_health", {})
+        if h:
+            target = h.get("target_ratio", 0.25)
+            ratio  = h.get("compression_ratio", target)
+            if abs(ratio - target) > 0.3 * target:
+                findings.append(
+                    f"**⚠ `{a['config']}` compression ratio unstable**: "
+                    f"{ratio:.3f} vs target {target:.3f} — raise λ_comp."
+                )
+        p = a.get("pos_health", {})
+        if p and p.get("boundary_bpc") and p.get("midchunk_bpc"):
+            u_gap = p["midchunk_bpc"] - p["boundary_bpc"]
+            if u_gap > 0.15:
+                findings.append(
+                    f"**⚠ `{a['config']}` U-shaped loss**: mid-chunk BPC {u_gap:+.4f} above "
+                    f"boundary BPC — gated residual may not be effective."
+                )
+
+    # Phase 1 hypothesis validation
+    for a in p1_complete:
+        ref_cfg, _ = _CONFIG_HYPOTHESIS.get(a["config"], (None, ""))
+        if ref_cfg is None:
             continue
-        actual_better = (a["best_val_bpc"] < baseline["best_val_bpc"] - 0.001)
-        if expected_better and not actual_better:
-            findings.append(
-                f"**`{a['config']}` hypothesis not confirmed**: expected to beat baseline, did not."
-            )
+        ref = next((x for x in analyses if x["config"] == ref_cfg), None)
+        if ref and ref["best_val_bpc"] and a["best_val_bpc"]:
+            if a["best_val_bpc"] > ref["best_val_bpc"] + 0.001:
+                findings.append(
+                    f"**`{a['config']}` hypothesis not confirmed**: "
+                    f"expected to beat `{ref_cfg}`, did not ({a['best_val_bpc']:.4f} vs {ref['best_val_bpc']:.4f})."
+                )
 
     # Alerts
     for a in analyses:
@@ -338,44 +433,71 @@ def key_findings(analyses):
 def next_steps(analyses):
     """Return list of actionable next-step strings derived from current results."""
     steps = []
-    complete  = [a for a in analyses if a["summary"] is not None]
-    running   = [a for a in analyses if a["summary"] is None and a["current_step"] > 0]
 
-    if running:
-        for a in running:
-            steps.append(f"Wait for `{a['config']}` to finish ({a['progress_pct']:.0f}% complete).")
+    p1_analyses = [a for a in analyses if a["phase"] == 1]
+    p2_analyses = [a for a in analyses if a["phase"] == 2]
+    p1_running  = [a for a in p1_analyses if a["summary"] is None and a["current_step"] > 0]
+    p2_running  = [a for a in p2_analyses if a["summary"] is None and a["current_step"] > 0]
+    p1_complete = [a for a in p1_analyses if a["summary"] is not None]
+    p2_complete = [a for a in p2_analyses if a["summary"] is not None]
+
+    # Still running
+    for a in p1_running + p2_running:
+        steps.append(f"Wait for `{a['config']}` to complete ({a['progress_pct']:.0f}%).")
+    if p1_running or p2_running:
         return steps
 
-    if len(complete) < len(CONFIGS):
-        steps.append("Start remaining configs: `bash run_experiments.sh`.")
+    # Phase 1 not started
+    if not p1_complete and not p2_complete:
+        steps.append("Run all experiments: `bash run_experiments.sh`")
         return steps
 
-    # All done — phase 1 complete
-    mhc     = next((a for a in analyses if a["config"] == "mhc"), None)
-    mol     = next((a for a in analyses if a["config"] == "mol"), None)
-    compose = next((a for a in analyses if a["config"] == "compose"), None)
+    # Phase 1 incomplete
+    p1_done_names = {a["config"] for a in p1_complete}
+    p1_remaining  = [c for c in PHASE1_CONFIGS if c not in p1_done_names]
+    if p1_remaining:
+        steps.append(f"Complete Phase 1: `bash run_experiments.sh phase1` "
+                     f"(remaining: {', '.join(p1_remaining)})")
+        return steps
 
+    # Phase 1 complete — check mHC diagnostic
+    mhc = next((a for a in analyses if a["config"] == "mhc"), None)
     if mhc and mhc["gnorm_rising"]:
         steps.append(
-            "**Diagnose mHC optimization**: rerun `mhc` with `--max_lr 1.5e-4` and `--max_lr 7.5e-5`. "
-            "Rising grad norm (1.29×) suggests Sinkhorn constraint is interfering. "
-            "A clean mHC result is needed before trusting compose."
+            "**Diagnose mHC**: rerun with `--max_lr 1.5e-4 --total_steps 25000` and "
+            "`--max_lr 7.5e-5`. Rising grad norm suggests Sinkhorn interference."
         )
 
-    if mol and compose and mol["best_val_bpc"] and compose["best_val_bpc"]:
-        penalty = compose["best_val_bpc"] - mol["best_val_bpc"]
-        if penalty > 0.001:
-            steps.append(
-                f"**Investigate composition penalty** ({penalty:.4f} BPC): "
-                "try `compose` with a per-component LR (mHC params at half rate). "
-                "Or check whether mHC's Sinkhorn normalization is disrupting MoL routing."
-            )
+    # Phase 2 not started
+    if not p2_complete:
+        steps.append("Start Phase 2: `bash run_experiments.sh phase2`")
+        return steps
 
-    steps.append(
-        "**Plan Phase 2**: HDC toy integration — implement Zone E (encoder + router) and "
-        "Zone D (EMA de-chunker) around the existing mol inner network at R=4, 5M params. "
-        "This is the A1 gate ablation at toy scale."
-    )
+    # Phase 2 incomplete
+    p2_done_names = {a["config"] for a in p2_complete}
+    p2_remaining  = [c for c in PHASE2_CONFIGS if c not in p2_done_names]
+    if p2_remaining:
+        steps.append(f"Continue Phase 2: `bash run_experiments.sh phase2` "
+                     f"(remaining: {', '.join(p2_remaining)})")
+        return steps
+
+    # Everything done
+    mol       = next((a for a in analyses if a["config"] == "mol"),         None)
+    hdc_gate  = next((a for a in analyses if a["config"] == "hdc_gate"),    None)
+    hdc_ruled = next((a for a in analyses if a["config"] == "hdc_rulebased"), None)
+
+    if hdc_gate and mol and hdc_gate["best_val_bpc"] and mol["best_val_bpc"]:
+        if hdc_gate["best_val_bpc"] < mol["best_val_bpc"] - 0.001:
+            steps.append(
+                "**Phase 2 succeeded** — HDC improves over mol. "
+                "Next: scale to 1–3B params for A1 validation at production scale."
+            )
+        else:
+            steps.append(
+                "**HDC did not improve over mol at toy scale.** "
+                "Run Section 14.1 diagnostics: visualize learned boundaries, "
+                "compare to whitespace/punctuation, try hdc_r2."
+            )
 
     return steps
 
@@ -391,35 +513,48 @@ def render_report(analyses):
         "",
     ]
 
-    # ── Cross-config comparison (top — highest signal) ────────────────────────
-    complete = [a for a in analyses if a["best_val_bpc"] is not None]
-    ranked   = sorted(complete, key=lambda a: a["best_val_bpc"])
-    baseline_bpc = next((a["best_val_bpc"] for a in ranked if a["config"] == "baseline"), None)
+    # ── Results tables (top — highest signal) ────────────────────────────────
+    p1_complete = [a for a in analyses if a["phase"] == 1 and a["best_val_bpc"] is not None]
+    p2_complete = [a for a in analyses if a["phase"] == 2 and a["best_val_bpc"] is not None]
+    baseline_bpc = next((a["best_val_bpc"] for a in p1_complete if a["config"] == "baseline"), None)
+    mol_bpc      = next((a["best_val_bpc"] for a in p1_complete if a["config"] == "mol"),      None)
 
-    if complete:
-        lines += ["## Results", ""]
+    if p1_complete:
+        lines += ["## Phase 1 Results", ""]
         lines.append("| Rank | Config | Best Val BPC | vs baseline | Params | Time |")
         lines.append("|------|--------|--------------|-------------|--------|------|")
-        for i, a in enumerate(ranked, 1):
+        for i, a in enumerate(sorted(p1_complete, key=lambda x: x["best_val_bpc"]), 1):
             vs     = f"{a['best_val_bpc'] - baseline_bpc:+.4f}" if baseline_bpc else "—"
             params = f"{a['summary']['n_params']:,}" if a["summary"] else "—"
             mins   = f"{a['summary']['elapsed_seconds']/60:.0f}m" if a["summary"] else "—"
             lines.append(f"| {i} | `{a['config']}` | {a['best_val_bpc']:.4f} | {vs} | {params} | {mins} |")
         lines += [""]
 
+    if p2_complete:
+        lines += ["## Phase 2 Results", ""]
+        lines.append("| Rank | Config | Best Val BPC | vs mol | R | Params | Time |")
+        lines.append("|------|--------|--------------|--------|---|--------|------|")
+        for i, a in enumerate(sorted(p2_complete, key=lambda x: x["best_val_bpc"]), 1):
+            vs     = f"{a['best_val_bpc'] - mol_bpc:+.4f}" if mol_bpc else "—"
+            R      = a["summary"].get("R", "?") if a["summary"] else "?"
+            params = f"{a['summary']['n_params']:,}" if a["summary"] else "—"
+            mins   = f"{a['summary']['elapsed_seconds']/60:.0f}m" if a["summary"] else "—"
+            lines.append(f"| {i} | `{a['config']}` | {a['best_val_bpc']:.4f} | {vs} | {R} | {params} | {mins} |")
+        lines += [""]
+
     # ── Progress summary (for in-progress runs) ───────────────────────────────
-    running = [a for a in analyses if a["summary"] is None]
+    running = [a for a in analyses if a["summary"] is None and a["current_step"] > 0]
     if running:
         lines += ["## In Progress", ""]
-        lines.append("| Config | Progress | Train BPC | Best Val BPC | Grad Norm | Status |")
-        lines.append("|--------|----------|-----------|--------------|-----------|--------|")
+        lines.append("| Config | Phase | Progress | Train BPC | Best Val BPC | Grad Norm | Status |")
+        lines.append("|--------|-------|----------|-----------|--------------|-----------|--------|")
         for a in running:
             prog  = f"{a['progress_pct']:.0f}% ({a['current_step']:,}/{TOTAL_STEPS:,})"
             cur   = f"{a['current_bpc']:.4f}" if a['current_bpc'] is not None else "—"
             best  = f"{a['best_val_bpc']:.4f}" if a['best_val_bpc'] is not None else "—"
             gnorm = f"{a['recent_gnorm']:.3f}" if a['recent_gnorm'] is not None else "—"
             icon  = STATUS_ICON.get(a["status"], "?")
-            lines.append(f"| `{a['config']}` | {prog} | {cur} | {best} | {gnorm} | {icon} {a['status']} |")
+            lines.append(f"| `{a['config']}` | {a['phase']} | {prog} | {cur} | {best} | {gnorm} | {icon} {a['status']} |")
         lines += [""]
 
     # ── Key findings ──────────────────────────────────────────────────────────
@@ -524,6 +659,42 @@ def render_report(analyses):
             lines.append(f"**⚠ Loss spikes** ({len(a['spikes'])} events):")
             for step, bpc in a["spikes"][:5]:
                 lines.append(f"  - step {step:,}: BPC {bpc:.4f}")
+            lines.append("")
+
+        # HDC health metrics (Phase 2 only)
+        h = a.get("hdc_health", {})
+        if h:
+            target = h.get("target_ratio", 0.25)
+            ratio  = h.get("compression_ratio", 0)
+            std    = h.get("ratio_std", 0)
+            ent    = h.get("boundary_entropy", 0)
+            comp_l = h.get("loss_comp", 0)
+            ratio_flag = " ⚠ UNSTABLE" if abs(ratio - target) > 0.3 * target else ""
+            lines.append("**HDC Health:**")
+            lines.append(f"- Compression ratio: {ratio:.3f} (target {target:.3f}, σ={std:.3f}){ratio_flag}")
+            lines.append(f"- Boundary entropy: {ent:.3f} (lower = more decisive routing)")
+            lines.append(f"- Compression loss: {comp_l:.5f}")
+            lines.append("")
+
+            if h.get("ratio_curve"):
+                lines.append("**Compression ratio over training:**")
+                lines.append("```")
+                for step, r in h["ratio_curve"]:
+                    bar = "█" * min(int(r * 80), 40)
+                    lines.append(f"  {step:>6,} | {r:.3f} | {bar}")
+                lines.append("```")
+                lines.append("")
+
+        # Per-position loss (Phase 2 only)
+        p = a.get("pos_health", {})
+        if p and p.get("boundary_bpc") and p.get("midchunk_bpc"):
+            b_bpc = p["boundary_bpc"]
+            m_bpc = p["midchunk_bpc"]
+            u_gap = m_bpc - b_bpc
+            flag  = " ⚠ U-SHAPED LOSS" if u_gap > 0.15 else (" ✓ healthy" if u_gap < 0.05 else "")
+            lines.append("**Per-position BPC (latest eval):**")
+            lines.append(f"- Boundary tokens:  {b_bpc:.4f} BPC")
+            lines.append(f"- Mid-chunk tokens: {m_bpc:.4f} BPC  (delta: {u_gap:+.4f}){flag}")
             lines.append("")
 
         # MoL expert balance
