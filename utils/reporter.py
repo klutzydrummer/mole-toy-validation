@@ -243,6 +243,142 @@ STATUS_ICON = {
     "insufficient data": "…",
 }
 
+# Expected outcome per config: (beat_baseline, description)
+_CONFIG_HYPOTHESIS = {
+    "baseline": (None,  "Control. Vanilla transformer. Target ~1.2–1.4 BPC at 50k steps."),
+    "mhc":      (True,  "Should beat baseline: mHC multi-stream residual adds representational diversity."),
+    "mol":      (True,  "Should beat baseline: MoL sparse experts add capacity without proportional cost."),
+    "compose":  (True,  "Should beat both mhc and mol: additive gains expected if components are orthogonal."),
+}
+
+
+def key_findings(analyses):
+    """Return list of finding strings derived from cross-config results."""
+    findings = []
+    complete = [a for a in analyses if a["best_val_bpc"] is not None]
+    if not complete:
+        return findings
+
+    ranked = sorted(complete, key=lambda a: a["best_val_bpc"])
+    baseline = next((a for a in analyses if a["config"] == "baseline"), None)
+    mol     = next((a for a in analyses if a["config"] == "mol"), None)
+    mhc     = next((a for a in analyses if a["config"] == "mhc"), None)
+    compose = next((a for a in analyses if a["config"] == "compose"), None)
+
+    # Winner
+    winner = ranked[0]
+    if baseline and winner["config"] != "baseline":
+        delta = baseline["best_val_bpc"] - winner["best_val_bpc"]
+        findings.append(
+            f"**Best config: `{winner['config']}`** at {winner['best_val_bpc']:.4f} BPC "
+            f"(+{delta:.4f} over baseline)."
+        )
+    elif baseline:
+        findings.append(
+            f"**No config beat baseline** ({baseline['best_val_bpc']:.4f} BPC). "
+            f"All modifications regressed or were neutral."
+        )
+
+    # mHC vs baseline
+    if mhc and baseline and mhc["best_val_bpc"] and baseline["best_val_bpc"]:
+        delta = mhc["best_val_bpc"] - baseline["best_val_bpc"]
+        if delta > 0.001:
+            findings.append(
+                f"**mHC regressed vs baseline** ({delta:+.4f} BPC). "
+                f"Architecture may need LR tuning — see grad norm trend."
+            )
+        elif delta < -0.001:
+            findings.append(
+                f"**mHC improved vs baseline** ({delta:+.4f} BPC). "
+                f"Multi-stream residual provides measurable benefit at this scale."
+            )
+        else:
+            findings.append(f"**mHC neutral vs baseline** ({delta:+.4f} BPC, within noise).")
+
+    # Composition penalty/benefit
+    if mol and compose and mol["best_val_bpc"] and compose["best_val_bpc"]:
+        penalty = compose["best_val_bpc"] - mol["best_val_bpc"]
+        if penalty > 0.001:
+            findings.append(
+                f"**Composition penalty: compose is {penalty:.4f} BPC worse than mol alone.** "
+                f"mHC interferes with MoL when combined — investigate before scaling."
+            )
+        elif penalty < -0.001:
+            findings.append(
+                f"**Composition benefit**: compose is {abs(penalty):.4f} BPC better than mol alone — "
+                f"components are complementary."
+            )
+        else:
+            findings.append(
+                f"**Composition neutral** (compose vs mol: {penalty:+.4f} BPC). "
+                f"mHC adds no harm but no gain on top of MoL."
+            )
+
+    # Hypothesis validation
+    for a in complete:
+        expected_better, _ = _CONFIG_HYPOTHESIS.get(a["config"], (None, ""))
+        if expected_better is None or not baseline:
+            continue
+        actual_better = (a["best_val_bpc"] < baseline["best_val_bpc"] - 0.001)
+        if expected_better and not actual_better:
+            findings.append(
+                f"**`{a['config']}` hypothesis not confirmed**: expected to beat baseline, did not."
+            )
+
+    # Alerts
+    for a in analyses:
+        if a["gnorm_rising"] and a["gnorm_trend_desc"]:
+            findings.append(f"**⚠ `{a['config']}` grad norm trending up**: {a['gnorm_trend_desc']}.")
+        if a["spikes"]:
+            findings.append(f"**⚠ `{a['config']}` had {len(a['spikes'])} loss spike(s)**.")
+
+    return findings
+
+
+def next_steps(analyses):
+    """Return list of actionable next-step strings derived from current results."""
+    steps = []
+    complete  = [a for a in analyses if a["summary"] is not None]
+    running   = [a for a in analyses if a["summary"] is None and a["current_step"] > 0]
+
+    if running:
+        for a in running:
+            steps.append(f"Wait for `{a['config']}` to finish ({a['progress_pct']:.0f}% complete).")
+        return steps
+
+    if len(complete) < len(CONFIGS):
+        steps.append("Start remaining configs: `bash run_experiments.sh`.")
+        return steps
+
+    # All done — phase 1 complete
+    mhc     = next((a for a in analyses if a["config"] == "mhc"), None)
+    mol     = next((a for a in analyses if a["config"] == "mol"), None)
+    compose = next((a for a in analyses if a["config"] == "compose"), None)
+
+    if mhc and mhc["gnorm_rising"]:
+        steps.append(
+            "**Diagnose mHC optimization**: rerun `mhc` with `--max_lr 1.5e-4` and `--max_lr 7.5e-5`. "
+            "Rising grad norm (1.29×) suggests Sinkhorn constraint is interfering. "
+            "A clean mHC result is needed before trusting compose."
+        )
+
+    if mol and compose and mol["best_val_bpc"] and compose["best_val_bpc"]:
+        penalty = compose["best_val_bpc"] - mol["best_val_bpc"]
+        if penalty > 0.001:
+            steps.append(
+                f"**Investigate composition penalty** ({penalty:.4f} BPC): "
+                "try `compose` with a per-component LR (mHC params at half rate). "
+                "Or check whether mHC's Sinkhorn normalization is disrupting MoL routing."
+            )
+
+    steps.append(
+        "**Plan Phase 2**: HDC toy integration — implement Zone E (encoder + router) and "
+        "Zone D (EMA de-chunker) around the existing mol inner network at R=4, 5M params. "
+        "This is the A1 gate ablation at toy scale."
+    )
+
+    return steps
+
 
 def render_report(analyses):
     now = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
@@ -253,25 +389,66 @@ def render_report(analyses):
         "",
         f"_Generated {now} — updated every 30s by `utils/reporter.py`_",
         "",
-        "## Summary",
-        "",
     ]
 
-    header = "| Config     | Progress | Train BPC | Best Val BPC | Grad Norm | Status |"
-    sep    = "|------------|----------|-----------|--------------|-----------|--------|"
-    lines += [header, sep]
-    for a in analyses:
-        prog  = f"{a['progress_pct']:.0f}% ({a['current_step']:,}/{TOTAL_STEPS:,})"
-        cur   = f"{a['current_bpc']:.4f}" if a['current_bpc'] is not None else "—"
-        best  = f"{a['best_val_bpc']:.4f}" if a['best_val_bpc'] is not None else "—"
-        gnorm = f"{a['recent_gnorm']:.3f}" if a['recent_gnorm'] is not None else "—"
-        icon  = STATUS_ICON.get(a["status"], "?")
-        lines.append(f"| {a['config']:<10} | {prog} | {cur:<9} | {best:<12} | {gnorm:<9} | {icon} {a['status']} |")
+    # ── Cross-config comparison (top — highest signal) ────────────────────────
+    complete = [a for a in analyses if a["best_val_bpc"] is not None]
+    ranked   = sorted(complete, key=lambda a: a["best_val_bpc"])
+    baseline_bpc = next((a["best_val_bpc"] for a in ranked if a["config"] == "baseline"), None)
 
-    lines += ["", "---", ""]
+    if complete:
+        lines += ["## Results", ""]
+        lines.append("| Rank | Config | Best Val BPC | vs baseline | Params | Time |")
+        lines.append("|------|--------|--------------|-------------|--------|------|")
+        for i, a in enumerate(ranked, 1):
+            vs     = f"{a['best_val_bpc'] - baseline_bpc:+.4f}" if baseline_bpc else "—"
+            params = f"{a['summary']['n_params']:,}" if a["summary"] else "—"
+            mins   = f"{a['summary']['elapsed_seconds']/60:.0f}m" if a["summary"] else "—"
+            lines.append(f"| {i} | `{a['config']}` | {a['best_val_bpc']:.4f} | {vs} | {params} | {mins} |")
+        lines += [""]
 
+    # ── Progress summary (for in-progress runs) ───────────────────────────────
+    running = [a for a in analyses if a["summary"] is None]
+    if running:
+        lines += ["## In Progress", ""]
+        lines.append("| Config | Progress | Train BPC | Best Val BPC | Grad Norm | Status |")
+        lines.append("|--------|----------|-----------|--------------|-----------|--------|")
+        for a in running:
+            prog  = f"{a['progress_pct']:.0f}% ({a['current_step']:,}/{TOTAL_STEPS:,})"
+            cur   = f"{a['current_bpc']:.4f}" if a['current_bpc'] is not None else "—"
+            best  = f"{a['best_val_bpc']:.4f}" if a['best_val_bpc'] is not None else "—"
+            gnorm = f"{a['recent_gnorm']:.3f}" if a['recent_gnorm'] is not None else "—"
+            icon  = STATUS_ICON.get(a["status"], "?")
+            lines.append(f"| `{a['config']}` | {prog} | {cur} | {best} | {gnorm} | {icon} {a['status']} |")
+        lines += [""]
+
+    # ── Key findings ──────────────────────────────────────────────────────────
+    findings = key_findings(analyses)
+    if findings:
+        lines += ["## Key Findings", ""]
+        for f in findings:
+            lines.append(f"- {f}")
+        lines += [""]
+
+    # ── Recommended next steps ────────────────────────────────────────────────
+    steps = next_steps(analyses)
+    if steps:
+        lines += ["## Next Steps", ""]
+        for i, s in enumerate(steps, 1):
+            lines.append(f"{i}. {s}")
+        lines += [""]
+
+    lines += ["---", ""]
+
+    # ── Per-config detail sections ────────────────────────────────────────────
     for a in analyses:
+        is_complete = a["summary"] is not None
         lines += [f"## `{a['config']}`", ""]
+
+        # Hypothesis
+        _, hyp_desc = _CONFIG_HYPOTHESIS.get(a["config"], (None, ""))
+        lines.append(f"_Hypothesis: {hyp_desc}_")
+        lines.append("")
 
         # Convergence line
         if a["bpc_rate"] is not None:
@@ -306,24 +483,32 @@ def render_report(analyses):
                 marker = " ★" if val_bpc == a["best_val_bpc"] else ""
                 if has_gap and step in gap_map:
                     _, t_bpc, v_bpc, gap = gap_map[step]
-                    gap_flag = " ⚠" if gap < -0.05 else ""  # train >> val = suspicious
+                    gap_flag = " ⚠" if gap < -0.05 else ""
                     lines.append(f"| {step:>6,} | {t_bpc:.4f} | {v_bpc:.4f}{marker} | {gap:+.4f}{gap_flag} | {delta} |")
                 else:
                     lines.append(f"| {step:>6,} | {val_bpc:.4f}{marker} | {delta} |")
                 prev_val = val_bpc
             lines.append("")
 
-        # Training BPC curve
+        # Training BPC curve — compact summary for completed runs, full chart for in-progress
         if a["train_curve"]:
-            lines.append("**Training BPC (sampled):**")
-            lines.append("```")
-            for step, bpc in a["train_curve"]:
-                bar = "█" * min(max(0, int((bpc - 1.0) * 40)), 60)
-                lines.append(f"  {step:>6,} | {bpc:.4f} | {bar}")
-            lines.append("```")
-            lines.append("")
+            if is_complete:
+                pts = a["train_curve"]
+                n   = len(pts)
+                q   = [pts[0], pts[n//4], pts[n//2], pts[3*n//4], pts[-1]]
+                segments = " → ".join(f"{bpc:.4f} (step {step:,})" for step, bpc in q)
+                lines.append(f"**Training BPC**: {segments}")
+                lines.append("")
+            else:
+                lines.append("**Training BPC (sampled):**")
+                lines.append("```")
+                for step, bpc in a["train_curve"]:
+                    bar = "█" * min(max(0, int((bpc - 1.0) * 40)), 60)
+                    lines.append(f"  {step:>6,} | {bpc:.4f} | {bar}")
+                lines.append("```")
+                lines.append("")
 
-        # Grad norm curve
+        # Grad norm curve — always show if data exists (key diagnostic)
         if a["grad_norm_curve"]:
             lines.append("**Gradient norm (sampled):**")
             lines.append("```")
@@ -365,31 +550,16 @@ def render_report(analyses):
 
         lines += ["---", ""]
 
-    # Cross-config comparison
-    complete = [a for a in analyses if a["best_val_bpc"] is not None]
-    if len(complete) >= 2:
-        lines += ["## Cross-config comparison", ""]
-        ranked = sorted(complete, key=lambda a: a["best_val_bpc"])
-        baseline_bpc = next((a["best_val_bpc"] for a in ranked if a["config"] == "baseline"), None)
-        lines.append("| Rank | Config | Best Val BPC | vs baseline |")
-        lines.append("|------|--------|--------------|-------------|")
-        for i, a in enumerate(ranked, 1):
-            vs = f"{a['best_val_bpc'] - baseline_bpc:+.4f}" if baseline_bpc else "—"
-            lines.append(f"| {i} | `{a['config']}` | {a['best_val_bpc']:.4f} | {vs} |")
-        lines += ["", "---", ""]
-
+    # ── Notes for Claude Code (reference, bottom) ─────────────────────────────
     lines += [
         "## Notes for Claude Code",
         "",
-        "- **BPC**: lower is better. Baseline target ~1.2–1.4 BPC at 50k steps. "
-          "Completed runs show `final_val_bpc` (200-batch eval); in-progress runs show best in-training val BPC (50-batch).",
-        "- **Grad norm**: should decrease or plateau. Spikes = instability. Near-zero = vanishing gradients. "
-          "Sustained rise (>1.2× early avg) flagged as ⚠ — watch for acceleration past ~1.0.",
-        "- **Train/val gap**: val BPC - train BPC. Positive (val > train) is normal (generalization gap). "
-          "Negative (train > val) flags data or eval issues.",
-        "- **Asymptotic approach**: improvement rate halving signals you're near the model's floor for this data/size.",
-        "- **Balance score**: MoL expert entropy / max_entropy. <0.5 = expert collapse.",
-        "- **`improving`**: val BPC dropped >0.002 over last 3 evals. `plateaued`: <0.002 change.",
+        "- **BPC**: lower is better. Results table uses `final_val_bpc` from summary.json "
+          "(200-batch eval) for completed runs; in-progress shows best in-training val BPC (50-batch).",
+        "- **Grad norm**: decrease or plateau is healthy. Sustained rise >1.2× early avg = ⚠ optimization issue.",
+        "- **Train/val gap**: val−train BPC. Positive is normal. Negative (train > val) = data or eval bug.",
+        "- **Composition penalty**: if compose > mol, mHC is hurting MoL — diagnose before scaling.",
+        "- **Balance score**: MoL expert utilization uniformity. <0.5 = expert collapse.",
         "- To regenerate: `python utils/reporter.py`",
         "- To watch live: `python utils/reporter.py --watch`",
         "",
