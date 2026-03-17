@@ -638,7 +638,10 @@ def render_report(analyses):
                 lines.append("**Training BPC (sampled):**")
                 lines.append("```")
                 for step, bpc in a["train_curve"]:
-                    bar = "█" * min(max(0, int((bpc - 1.0) * 40)), 60)
+                    if math.isfinite(bpc):
+                        bar = "█" * min(max(0, int((bpc - 1.0) * 40)), 60)
+                    else:
+                        bar = "nan"
                     lines.append(f"  {step:>6,} | {bpc:.4f} | {bar}")
                 lines.append("```")
                 lines.append("")
@@ -684,7 +687,7 @@ def render_report(analyses):
                 lines.append("**Compression ratio over training:**")
                 lines.append("```")
                 for step, r in h["ratio_curve"]:
-                    bar = "█" * min(int(r * 80), 40)
+                    bar = ("█" * min(int(r * 80), 40)) if math.isfinite(r) else "nan"
                     lines.append(f"  {step:>6,} | {r:.3f} | {bar}")
                 lines.append("```")
                 lines.append("")
