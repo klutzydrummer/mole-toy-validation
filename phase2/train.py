@@ -61,6 +61,23 @@ def _unwrap(model):
     return model._orig_mod if hasattr(model, "_orig_mod") else model
 
 
+def _lit_log(lit, metrics: dict, step: int = None) -> None:
+    """Wrapper around lit.log_metrics that silently drops NaN/inf values.
+    Lightning's API serializes metrics to JSON; float('nan') becomes 'NaN'
+    which is invalid JSON and raises a 400 error from the Lightning cloud."""
+    import math
+    clean = {k: v for k, v in metrics.items() if isinstance(v, float) and math.isfinite(v)}
+    if not clean:
+        return
+    try:
+        if step is not None:
+            lit.log_metrics(clean, step=step)
+        else:
+            lit.log_metrics(clean)
+    except Exception:
+        pass  # Don't let logging failures crash training
+
+
 def boundary_entropy(boundary_probs: torch.Tensor) -> float:
     """Entropy of the boundary probability distribution — higher = more uniform (worse)."""
     p = boundary_probs.detach().float().clamp(1e-8, 1.0 - 1e-8)
@@ -287,7 +304,7 @@ def train(
             print(f"    comp={comp_ratio:.3f}  loss_comp={avg_comp:.5f}  ent={avg_ent:.3f}")
 
             if lit is not None:
-                lit.log_metrics({
+                _lit_log(lit, {
                     "train/loss": avg_loss, "train/bpc": ce_to_bpc(avg_loss),
                     "train/lr": lr, "train/grad_norm": grad_norm,
                     "hdc/compression_ratio": comp_ratio,
@@ -320,11 +337,11 @@ def train(
                 print(f"  >>> MoL avg balance: {avg_bal:.3f}")
                 logger.log_mol_stats(step, mol_stats)
                 if lit is not None:
-                    lit.log_metrics({"mol/avg_balance": avg_bal}, step=step)
+                    _lit_log(lit, {"mol/avg_balance": avg_bal}, step=step)
             _unwrap(model).reset_mol_counts()
 
             if lit is not None:
-                lit.log_metrics({
+                _lit_log(lit, {
                     "val/loss": val_loss, "val/bpc": val_bpc,
                     "hdc/val_compression_ratio": val_ratio,
                     "hdc/boundary_bpc": b_bpc, "hdc/midchunk_bpc": m_bpc,
@@ -372,7 +389,7 @@ def train(
         json.dump(summary, f, indent=2)
 
     if lit is not None:
-        lit.log_metrics({"final/best_val_bpc": best_val_bpc, "final/val_bpc": val_bpc})
+        _lit_log(lit, {"final/best_val_bpc": best_val_bpc, "final/val_bpc": val_bpc})
         lit.finalize()
 
     return best_val_bpc

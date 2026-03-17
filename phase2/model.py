@@ -122,15 +122,20 @@ class CausalRecurrenceLayer(nn.Module):
         r_t = torch.sigmoid(self.W_r(x_conv))                 # [B, L, d] in (0, 1)
         i_t = torch.sigmoid(self.W_i(x_conv))                 # [B, L, d] in (0, 1)
 
-        # Per-channel base decay raised to 8*r_t (input-dependent)
-        a_base = torch.sigmoid(self.log_a)                    # [d] in (0, 1), near 1
-        a_t    = a_base.pow(8.0 * r_t)                        # [B, L, d] in (~0.9, 1)
+        # Per-channel base decay raised to 8*r_t (input-dependent).
+        # IMPORTANT: compute sigmoid(log_a) in float32 before casting back to
+        # the working dtype. Under AMP float16, sigmoid(7.5) ≈ 0.9994 rounds UP
+        # to exactly 1.0 (the largest float16 < 1.0 is 0.9990). a_t = 1.0 then
+        # makes 1 - a_t² = 0, b_t = 0, the entire recurrence output is zero, and
+        # F.normalize(zeros) = NaN in ZoneE. Float32 gives sigmoid(7.5) = 0.9994.
+        a_base = torch.sigmoid(self.log_a.float()).to(x.dtype)  # [d] float32 → dtype
+        a_t    = a_base.pow(8.0 * r_t)                          # [B, L, d] in (~0.9, 1)
 
         # 3. Recurrence scan with norm conservation
         # Pre-compute b_t = sqrt(1 - a_t²) * (i_t * x_conv) for all timesteps,
         # then delegate to _sequential_scan which is @torch.compiler.disable'd.
-        b_t = torch.sqrt((1.0 - a_t.pow(2)).clamp(min=0.0)) * (i_t * x_conv)
-        out = _sequential_scan(a_t, b_t)                       # [B, L, d]
+        b_t = torch.sqrt((1.0 - a_t.pow(2)).clamp(min=1e-6)) * (i_t * x_conv)
+        out = _sequential_scan(a_t, b_t)                         # [B, L, d]
 
         # 4. Output projection + norm
         return self.norm(self.out_proj(out))
