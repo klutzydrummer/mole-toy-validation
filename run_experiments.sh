@@ -4,11 +4,12 @@
 # Every config auto-resumes from checkpoint if interrupted.
 #
 # Usage:
-#   bash run_experiments.sh              # run everything (default)
-#   bash run_experiments.sh phase1       # Phase 1 only
-#   bash run_experiments.sh phase2       # Phase 2 only
-#   bash run_experiments.sh baseline     # single Phase 1 config
-#   bash run_experiments.sh hdc_gate     # single Phase 2 config
+#   bash run_experiments.sh                      # run everything (default)
+#   bash run_experiments.sh phase1               # Phase 1 only
+#   bash run_experiments.sh phase2               # Phase 2 only
+#   bash run_experiments.sh baseline             # single Phase 1 config
+#   bash run_experiments.sh hdc_gate             # single Phase 2 config
+#   bash run_experiments.sh phase2 --shutdown    # shutdown instance when done
 #
 # Phase 2 run order is enforced: hdc_rulebased always runs before hdc_gate.
 # This validates the pipeline (Zone E → inner → Zone D) before adding learned routing.
@@ -21,6 +22,10 @@
 set -e
 
 TARGET="${1:-all}"
+SHUTDOWN=0
+for arg in "$@"; do
+  [ "$arg" = "--shutdown" ] && SHUTDOWN=1
+done
 
 # ── Sanity checks ──────────────────────────────────────────────────────────────
 if [ ! -f "data/enwik8_train.npy" ] || [ ! -f "data/enwik8_val.npy" ]; then
@@ -37,7 +42,11 @@ REPORTER_PIDFILE="checkpoints/.reporter.pid"
 python utils/reporter.py --watch --interval 30 &
 REPORTER_PID=$!
 echo "$REPORTER_PID" > "$REPORTER_PIDFILE"
-trap "kill $REPORTER_PID 2>/dev/null; rm -f '$REPORTER_PIDFILE'; python utils/reporter.py; echo ''; echo 'Shutting down instance...'; sudo shutdown -h now" EXIT
+if [ "$SHUTDOWN" = "1" ]; then
+    trap "kill $REPORTER_PID 2>/dev/null; rm -f '$REPORTER_PIDFILE'; python utils/reporter.py; echo ''; echo 'Shutting down instance...'; sudo shutdown -h now" EXIT
+else
+    trap "kill $REPORTER_PID 2>/dev/null; rm -f '$REPORTER_PIDFILE'; python utils/reporter.py" EXIT
+fi
 
 # ── Phase 1 runner ─────────────────────────────────────────────────────────────
 run_phase1() {
