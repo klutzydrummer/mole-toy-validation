@@ -80,7 +80,10 @@ def _lit_log(lit, metrics: dict, step: int = None) -> None:
 
 def boundary_entropy(boundary_probs: torch.Tensor) -> float:
     """Entropy of the boundary probability distribution — higher = more uniform (worse)."""
-    p = boundary_probs.detach().float().clamp(1e-8, 1.0 - 1e-8)
+    # Clamp with 1e-6, NOT 1e-8. Float32 ULP at 1.0 is ~1.19e-7, so
+    # 1.0 - 1e-8 == 1.0 exactly in float32 — p=1.0 is not actually clamped,
+    # (1-1.0)*log(0) = 0*(-inf) = NaN (IEEE 754). 1e-6 > ULP so it works.
+    p = boundary_probs.detach().float().clamp(1e-6, 1.0 - 1e-6)
     ent = -(p * p.log() + (1 - p) * (1 - p).log()).mean().item()
     return ent
 
