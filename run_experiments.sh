@@ -93,6 +93,7 @@ run_phase2() {
         --seq_len      512 \
         --eval_interval 2500 \
         --log_interval  100 \
+        --no_compile \
         $RESUME_FLAG
 }
 
