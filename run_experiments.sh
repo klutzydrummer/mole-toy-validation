@@ -37,7 +37,7 @@ REPORTER_PIDFILE="checkpoints/.reporter.pid"
 python utils/reporter.py --watch --interval 30 &
 REPORTER_PID=$!
 echo "$REPORTER_PID" > "$REPORTER_PIDFILE"
-trap "kill $REPORTER_PID 2>/dev/null; rm -f '$REPORTER_PIDFILE'; python utils/reporter.py" EXIT
+trap "kill $REPORTER_PID 2>/dev/null; rm -f '$REPORTER_PIDFILE'; python utils/reporter.py; echo ''; echo 'Shutting down instance...'; sudo shutdown -h now" EXIT
 
 # ── Phase 1 runner ─────────────────────────────────────────────────────────────
 run_phase1() {
