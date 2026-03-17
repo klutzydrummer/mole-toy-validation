@@ -23,8 +23,8 @@ set -e
 TARGET="${1:-all}"
 
 # ── Sanity checks ──────────────────────────────────────────────────────────────
-if [ ! -f "data/train.npy" ] || [ ! -f "data/val.npy" ]; then
-    echo "ERROR: data/train.npy or data/val.npy not found."
+if [ ! -f "data/enwik8_train.npy" ] || [ ! -f "data/enwik8_val.npy" ]; then
+    echo "ERROR: data/enwik8_train.npy or data/enwik8_val.npy not found."
     echo "       Run: bash setup.sh"
     exit 1
 fi
