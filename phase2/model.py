@@ -38,6 +38,37 @@ from phase1.model import RMSNorm, TransformerBlock
 
 
 # ============================================================
+# Compile-friendly helpers
+# ============================================================
+
+@torch.compiler.disable
+def _sequential_scan(a_t: torch.Tensor, b_t: torch.Tensor) -> torch.Tensor:
+    """
+    Sequential linear recurrence: h_t = a_t * h_{t-1} + b_t,  h_{-1} = 0.
+
+    a_t, b_t: [B, L, d]  — all timesteps pre-computed before calling.
+    Returns:  [B, L, d]
+
+    @torch.compiler.disable prevents torch.compile from unrolling the L-step
+    loop into a static graph of L*3 nodes, which causes compilation to hang on
+    T4 GPUs (observed: >10 min for L=512 with 6 instances of this scan).
+    The decorated function runs eagerly; CUDA ops inside are still async and
+    execute on the GPU stream without CPU synchronisation between steps.
+
+    A closed-form parallel scan (log-space cumsum) would compile cleanly but
+    has float16 overflow risk when decay values approach 0 (e.g. at hard
+    boundaries where p=1 forces decay=0). Sequential scan is numerically safe.
+    """
+    B, L, d = b_t.shape
+    h = b_t.new_zeros(B, d)
+    outputs = []
+    for t in range(L):
+        h = a_t[:, t] * h + b_t[:, t]
+        outputs.append(h)
+    return torch.stack(outputs, dim=1)
+
+
+# ============================================================
 # Outer Network: CausalRecurrenceLayer
 # ============================================================
 
@@ -96,15 +127,10 @@ class CausalRecurrenceLayer(nn.Module):
         a_t    = a_base.pow(8.0 * r_t)                        # [B, L, d] in (~0.9, 1)
 
         # 3. Recurrence scan with norm conservation
-        h = x.new_zeros(B, d)
-        outputs = []
-        for t in range(L):
-            a   = a_t[:, t]                                    # [B, d]
-            inp = i_t[:, t] * x_conv[:, t]                    # [B, d]
-            # sqrt(1 - a²) ensures unit-norm input contributes predictably
-            h = a * h + torch.sqrt((1.0 - a.pow(2)).clamp(min=0.0)) * inp
-            outputs.append(h)
-        out = torch.stack(outputs, dim=1)                      # [B, L, d]
+        # Pre-compute b_t = sqrt(1 - a_t²) * (i_t * x_conv) for all timesteps,
+        # then delegate to _sequential_scan which is @torch.compiler.disable'd.
+        b_t = torch.sqrt((1.0 - a_t.pow(2)).clamp(min=0.0)) * (i_t * x_conv)
+        out = _sequential_scan(a_t, b_t)                       # [B, L, d]
 
         # 4. Output projection + norm
         return self.norm(self.out_proj(out))
@@ -340,7 +366,7 @@ class ZoneD(nn.Module):
 
     2. Plug-back (H-Net Eq. 8):
          token j gets h̄ of the nearest preceding boundary position
-         Implemented via torch.bucketize on sorted boundary_idx
+         Implemented via torch.searchsorted on sorted boundary_idx (batched)
 
     3. Gated residual (H-Net Eq. 3, refined):
          h_j = (1 - p_j) * sigmoid(W_gate · encoder_out_j) * encoder_out_j + plugback_j
@@ -371,29 +397,30 @@ class ZoneD(nn.Module):
         M = concept_out.shape[1]
 
         # ── Step 1: EMA smoothing over M concept tokens ───────────────────────
-        # p at each selected boundary position
-        p_at_bounds = boundary_probs.gather(1, boundary_idx)  # [B, M]
-
-        h_prev     = concept_out.new_zeros(B, d)
-        smoothed   = []
-        for i in range(M):
-            p_i    = p_at_bounds[:, i:i+1]                    # [B, 1]
-            h_prev = p_i * concept_out[:, i] + (1.0 - p_i) * h_prev
-            smoothed.append(h_prev)
-        smoothed = torch.stack(smoothed, dim=1)                # [B, M, d]
+        # Recurrence: h_i = p_i * concept_i + (1 - p_i) * h_{i-1},  h_{-1} = 0
+        # Cast to _sequential_scan form: a_t = (1-p), b_t = p * concept.
+        # _sequential_scan is @torch.compiler.disable'd — prevents torch.compile
+        # from unrolling M=128 steps into a large static graph.
+        p_at_bounds = boundary_probs.gather(1, boundary_idx)              # [B, M]
+        a_ema = (1.0 - p_at_bounds).unsqueeze(-1).expand(-1, -1, d)      # [B, M, d]
+        b_ema = p_at_bounds.unsqueeze(-1) * concept_out                   # [B, M, d]
+        smoothed = _sequential_scan(a_ema.contiguous(), b_ema)            # [B, M, d]
 
         # ── Step 2: Plug-back — map each of L positions to nearest boundary ───
-        # For position j: find largest boundary_idx[b] <= j
-        # torch.bucketize(j, sorted_boundaries, right=True) returns count of
-        # boundaries <= j, so index = count - 1.
-        # Since position 0 is always selected, count >= 1 for all j >= 0.
-        plugback = torch.empty(B, L, d,
-                               device=concept_out.device, dtype=concept_out.dtype)
+        # torch.searchsorted accepts batched [B, M] boundaries and [B, L] queries,
+        # replacing the for b in range(B) loop with a single CUDA kernel call.
+        # right=True matches torch.bucketize(..., right=True): returns the count
+        # of boundary_idx values <= j, so (count - 1) is the bucket index.
+        # Since position 0 is always selected, count >= 1 for all j.
         arange_L = torch.arange(L, device=boundary_idx.device)
-        for b in range(B):
-            count       = torch.bucketize(arange_L, boundary_idx[b], right=True)  # [L]
-            bucket      = (count - 1).clamp(min=0)                                # [L]
-            plugback[b] = smoothed[b][bucket]                                     # [L, d]
+        queries  = arange_L.unsqueeze(0).expand(B, -1)                   # [B, L]
+        count    = torch.searchsorted(                                     # [B, L]
+            boundary_idx.contiguous(), queries.contiguous(), right=True,
+        )
+        bucket   = (count - 1).clamp(min=0)                              # [B, L]
+        plugback = smoothed.gather(                                        # [B, L, d]
+            1, bucket.unsqueeze(-1).expand(-1, -1, d),
+        )
 
         # ── Step 3: Gated residual from Zone E skip connection ─────────────────
         gate       = torch.sigmoid(self.gate_proj(encoder_out))  # [B, L, d]
