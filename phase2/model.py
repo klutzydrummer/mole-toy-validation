@@ -183,8 +183,12 @@ class BoundaryRouter(nn.Module):
             # Cosine sim between adjacent tokens
             sim = (enc_n[:, 1:] * enc_n[:, :-1]).sum(dim=-1)  # [B, L-1]
             p   = (1.0 - sim) / 2.0                            # [B, L-1] in [0, 1]
-            # Position 0: no predecessor → lowest priority (will be forced in below)
-            boundary_probs = F.pad(p, (1, 0), value=0.0)       # [B, L]
+            # Position 0: no predecessor → pad with 1.0 (certain boundary).
+            # Must be 1.0, not 0.0: Zone D's EMA uses p_at_bounds[:,0] directly.
+            # value=0.0 would zero out the first concept token in EMA smoothing,
+            # causing all tokens in the first chunk to receive zeros from the
+            # inner network (plugback = smoothed[0] = zeros).
+            boundary_probs = F.pad(p, (1, 0), value=1.0)       # [B, L]
 
         else:  # learned_e2e or learned_isolated
             q = F.normalize(self.W_q(enc), dim=-1)             # [B, L, d]
@@ -192,15 +196,12 @@ class BoundaryRouter(nn.Module):
             # Compare each q_t to k_{t-1} (adjacent, NOT ema)
             sim = (q[:, 1:] * k[:, :-1]).sum(dim=-1)           # [B, L-1]
             p   = (1.0 - sim) / 2.0                            # [B, L-1]
-            boundary_probs = F.pad(p, (1, 0), value=0.0)       # [B, L]
+            boundary_probs = F.pad(p, (1, 0), value=1.0)       # [B, L], pos 0 = 1.0
 
         # ── Top-M selection (always exact M = L // R) ─────────────────────────
-        # Force position 0 to always be selected (first token is always a boundary)
-        bp_boosted = boundary_probs.clone()
-        bp_boosted[:, 0] = 1.0
-
-        _, topk_idx    = bp_boosted.topk(M, dim=1)             # [B, M]
-        boundary_idx   = topk_idx.sort(dim=1).values           # [B, M] ascending by position
+        # Position 0 is already 1.0 — always wins topk. No boost needed.
+        _, topk_idx  = boundary_probs.topk(M, dim=1)           # [B, M]
+        boundary_idx = topk_idx.sort(dim=1).values             # [B, M] ascending by position
 
         # For isolated routing: block LM gradients from reaching the router
         if self.routing == "learned_isolated":
