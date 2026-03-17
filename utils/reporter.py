@@ -647,9 +647,13 @@ def render_report(analyses):
         if a["grad_norm_curve"]:
             lines.append("**Gradient norm (sampled):**")
             lines.append("```")
-            max_gnorm = max(g for _, g in a["grad_norm_curve"])
+            finite = [g for _, g in a["grad_norm_curve"] if math.isfinite(g)]
+            max_gnorm = max(finite, default=1.0)
             for step, gnorm in a["grad_norm_curve"]:
-                bar = "█" * min(int(gnorm / max(max_gnorm, 1e-8) * 40), 40)
+                if math.isfinite(gnorm):
+                    bar = "█" * min(int(gnorm / max(max_gnorm, 1e-8) * 40), 40)
+                else:
+                    bar = "nan"
                 lines.append(f"  {step:>6,} | {gnorm:.4f} | {bar}")
             lines.append("```")
             lines.append("")
