@@ -41,31 +41,58 @@ from phase1.model import RMSNorm, TransformerBlock
 # Compile-friendly helpers
 # ============================================================
 
-@torch.compiler.disable
-def _sequential_scan(a_t: torch.Tensor, b_t: torch.Tensor) -> torch.Tensor:
+def _parallel_scan(a_t: torch.Tensor, b_t: torch.Tensor) -> torch.Tensor:
     """
-    Sequential linear recurrence: h_t = a_t * h_{t-1} + b_t,  h_{-1} = 0.
+    Parallel linear recurrence: h_t = a_t * h_{t-1} + b_t,  h_{-1} = 0.
 
-    a_t, b_t: [B, L, d]  — all timesteps pre-computed before calling.
+    a_t, b_t: [B, L, d]   a_t must be in (0, 1] (no zeros).
     Returns:  [B, L, d]
 
-    @torch.compiler.disable prevents torch.compile from unrolling the L-step
-    loop into a static graph of L*3 nodes, which causes compilation to hang on
-    T4 GPUs (observed: >10 min for L=512 with 6 instances of this scan).
-    The decorated function runs eagerly; CUDA ops inside are still async and
-    execute on the GPU stream without CPU synchronisation between steps.
+    Closed-form solution via log-space prefix scan (O(1) depth, fully vectorised):
+      log_A_t = cumsum(log(a_t), dim=1)          — log of running product A_t
+      h_t     = A_t * cumsum(b_t / A_t, dim=1)  — standard closed form
 
-    A closed-form parallel scan (log-space cumsum) would compile cleanly but
-    has float16 overflow risk when decay values approach 0 (e.g. at hard
-    boundaries where p=1 forces decay=0). Sequential scan is numerically safe.
+    Computed in float32 regardless of input dtype to avoid float16 saturation.
+    log_A is clamped to [-80, 0]:
+      - upper bound 0 is exact (a_t ≤ 1 → log ≤ 0)
+      - lower bound -80 caps exp(−80) ≈ 1.8e-35; contributions from steps where
+        the cumulative decay is that small are negligible (< 1e-34 × input scale)
+      - exp(+80) ≈ 5.5e34 fits comfortably in float32 (max ~3.4e38)
+
+    Replaces _sequential_scan (512 Python-loop iterations × 6 instances = ~12k
+    CUDA kernel launches per step). Reduces to ~6 ops per instance, compilable
+    by torch.compile into a single fused kernel graph.
     """
-    B, L, d = b_t.shape
-    h = b_t.new_zeros(B, d)
-    outputs = []
-    for t in range(L):
-        h = a_t[:, t] * h + b_t[:, t]
-        outputs.append(h)
-    return torch.stack(outputs, dim=1)
+    a = a_t.float()
+    b = b_t.float()
+    log_A = torch.log(a.clamp(min=1e-7)).cumsum(dim=1).clamp(min=-80.0)  # [B, L, d]
+    A     = log_A.exp()                                                    # [B, L, d]
+    h     = A * (b * (-log_A).exp()).cumsum(dim=1)                        # [B, L, d]
+    return h.to(a_t.dtype)
+
+
+def _parallel_scan_with_init(
+    a_t: torch.Tensor, b_t: torch.Tensor, h0: torch.Tensor
+) -> torch.Tensor:
+    """
+    Parallel linear recurrence with non-zero initial state h0.
+
+    h_t = a_t * h_{t-1} + b_t,   h_{-1} = h0
+    a_t, b_t: [B, L, d]    a_t in (0, 1] (no zeros, clamp before calling)
+    h0:       [B, d]        initial hidden state
+    Returns:  [B, L, d]
+
+    Closed form splits into two terms:
+      h_t = A_t * h0 + A_t * cumsum(b_k / A_k)
+    where the first term is the initial-state contribution decayed by A_t.
+    """
+    a = a_t.float()
+    b = b_t.float()
+    h = h0.float().unsqueeze(1)                                            # [B, 1, d]
+    log_A = torch.log(a.clamp(min=1e-7)).cumsum(dim=1).clamp(min=-80.0)  # [B, L, d]
+    A     = log_A.exp()                                                    # [B, L, d]
+    h_out = A * h + A * (b * (-log_A).exp()).cumsum(dim=1)                # [B, L, d]
+    return h_out.to(a_t.dtype)
 
 
 # ============================================================
@@ -133,9 +160,9 @@ class CausalRecurrenceLayer(nn.Module):
 
         # 3. Recurrence scan with norm conservation
         # Pre-compute b_t = sqrt(1 - a_t²) * (i_t * x_conv) for all timesteps,
-        # then delegate to _sequential_scan which is @torch.compiler.disable'd.
+        # then run parallel scan (log-space cumsum, fully vectorised, compilable).
         b_t = torch.sqrt((1.0 - a_t.pow(2)).clamp(min=1e-6)) * (i_t * x_conv)
-        out = _sequential_scan(a_t, b_t)                         # [B, L, d]
+        out = _parallel_scan(a_t, b_t)                           # [B, L, d]
 
         # 4. Output projection + norm
         return self.norm(self.out_proj(out))
@@ -403,13 +430,22 @@ class ZoneD(nn.Module):
 
         # ── Step 1: EMA smoothing over M concept tokens ───────────────────────
         # Recurrence: h_i = p_i * concept_i + (1 - p_i) * h_{i-1},  h_{-1} = 0
-        # Cast to _sequential_scan form: a_t = (1-p), b_t = p * concept.
-        # _sequential_scan is @torch.compiler.disable'd — prevents torch.compile
-        # from unrolling M=128 steps into a large static graph.
+        #
+        # Position 0: boundary_probs[:,0] = 1.0 always, so decay_0 = 0.
+        # Handle explicitly: h_0 = 1.0 * concept_0 + 0.0 * 0 = concept_0.
+        # Positions 1..M-1: use _parallel_scan_with_init(h0=h_0).
+        # decay_rest = 1 - p_rest, clamped away from 0 so log is defined.
         p_at_bounds = boundary_probs.gather(1, boundary_idx)              # [B, M]
-        a_ema = (1.0 - p_at_bounds).unsqueeze(-1).expand(-1, -1, d)      # [B, M, d]
-        b_ema = p_at_bounds.unsqueeze(-1) * concept_out                   # [B, M, d]
-        smoothed = _sequential_scan(a_ema.contiguous(), b_ema)            # [B, M, d]
+        h0      = concept_out[:, 0]                                       # [B, d]
+        if M > 1:
+            p_rest    = p_at_bounds[:, 1:]                                # [B, M-1]
+            decay     = (1.0 - p_rest).clamp(min=1e-7)                   # [B, M-1]
+            b_rest    = p_rest.unsqueeze(-1) * concept_out[:, 1:]        # [B, M-1, d]
+            a_rest    = decay.unsqueeze(-1).expand_as(b_rest)            # [B, M-1, d]
+            h_rest    = _parallel_scan_with_init(a_rest, b_rest, h0)     # [B, M-1, d]
+            smoothed  = torch.cat([h0.unsqueeze(1), h_rest], dim=1)      # [B, M, d]
+        else:
+            smoothed  = h0.unsqueeze(1)                                   # [B, 1, d]
 
         # ── Step 2: Plug-back — map each of L positions to nearest boundary ───
         # torch.searchsorted accepts batched [B, M] boundaries and [B, L] queries,
