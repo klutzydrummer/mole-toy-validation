@@ -103,6 +103,37 @@ run_phase2() {
         $RESUME_FLAG
 }
 
+# ── Upcycle runner (25k steps, frozen mol inner, d_outer=d/2) ──────────────────
+run_upcycle() {
+    local cfg="$1"
+    echo ""
+    echo "========================================"
+    echo "  Upcycle: $cfg"
+    echo "========================================"
+
+    if [ ! -f "checkpoints/mol_best.pt" ]; then
+        echo "ERROR: checkpoints/mol_best.pt not found."
+        echo "       Run phase1 mol first: bash run_experiments.sh mol"
+        exit 1
+    fi
+
+    RESUME_FLAG=""
+    if [ -f "checkpoints/${cfg}_latest.pt" ]; then
+        echo "  Found checkpoint — resuming."
+        RESUME_FLAG="--resume"
+    fi
+
+    python phase2/train.py \
+        --config    "$cfg" \
+        --total_steps  25000 \
+        --batch_size   32 \
+        --seq_len      512 \
+        --eval_interval 2500 \
+        --log_interval  100 \
+        --mol_ckpt  "checkpoints/mol_best.pt" \
+        $RESUME_FLAG
+}
+
 # ── Dispatch ───────────────────────────────────────────────────────────────────
 case "$TARGET" in
 
@@ -139,6 +170,12 @@ case "$TARGET" in
     run_phase2 hdc_e2e_isolated
     ;;
 
+  upcycle)
+    # hdc_upcycle_stride first (lower bound, validates pipeline)
+    run_upcycle hdc_upcycle_stride
+    run_upcycle hdc_upcycle_gate
+    ;;
+
   # Individual Phase 1 configs
   baseline | mhc | mol | compose)
     run_phase1 "$TARGET"
@@ -157,11 +194,17 @@ case "$TARGET" in
     run_phase2 "$TARGET"
     ;;
 
+  # Individual upcycle configs
+  hdc_upcycle_gate | hdc_upcycle_stride)
+    run_upcycle "$TARGET"
+    ;;
+
   *)
     echo "ERROR: Unknown target '$TARGET'"
-    echo "Usage: bash run_experiments.sh [all|phase1|phase2|<config>]"
+    echo "Usage: bash run_experiments.sh [all|phase1|phase2|upcycle|<config>]"
     echo "Phase 1 configs: baseline mhc mol compose"
     echo "Phase 2 configs: hdc_rulebased hdc_gate hdc_stride hdc_r2 hdc_r8 hdc_e2e_isolated"
+    echo "Upcycle configs: hdc_upcycle_stride hdc_upcycle_gate"
     exit 1
     ;;
 esac
@@ -176,6 +219,7 @@ import json, os, glob
 
 PHASE1 = ["baseline", "mhc", "mol", "compose"]
 PHASE2 = ["hdc_rulebased", "hdc_gate", "hdc_stride", "hdc_r2", "hdc_r8", "hdc_e2e_isolated"]
+UPCYCLE = ["hdc_upcycle_stride", "hdc_upcycle_gate"]
 
 def print_phase(label, configs):
     rows = []
@@ -193,8 +237,9 @@ def print_phase(label, configs):
     for cfg, bpc, params in rows:
         print(f"{cfg:<22} {bpc:>10.4f} {params:>12,}")
 
-print_phase("Phase 1", PHASE1)
-print_phase("Phase 2", PHASE2)
+print_phase("Phase 1",   PHASE1)
+print_phase("Phase 2",   PHASE2)
+print_phase("Upcycle",   UPCYCLE)
 
 # Cross-phase comparison: best Phase 2 vs mol baseline
 import os
@@ -203,8 +248,8 @@ p2_paths = [f"checkpoints/{c}_summary.json" for c in PHASE2]
 if os.path.exists(mol_path) and any(os.path.exists(p) for p in p2_paths):
     with open(mol_path) as f:
         mol_bpc = json.load(f)["best_val_bpc"]
-    print(f"\nPhase 2 vs mol baseline ({mol_bpc:.4f}):")
-    for cfg in PHASE2:
+    print(f"\nPhase 2 + Upcycle vs mol baseline ({mol_bpc:.4f}):")
+    for cfg in PHASE2 + UPCYCLE:
         path = f"checkpoints/{cfg}_summary.json"
         if os.path.exists(path):
             with open(path) as f:

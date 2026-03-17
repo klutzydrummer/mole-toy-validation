@@ -483,12 +483,18 @@ class HDCModel(nn.Module):
     """
 
     CONFIGS = {
-        "hdc_rulebased":    dict(routing="cosine_rule",      R=4),
-        "hdc_gate":         dict(routing="learned_e2e",      R=4),
-        "hdc_stride":       dict(routing="fixed_stride",     R=4),
-        "hdc_r2":           dict(routing="learned_e2e",      R=2),
-        "hdc_r8":           dict(routing="learned_e2e",      R=8),
-        "hdc_e2e_isolated": dict(routing="learned_isolated", R=4),
+        # Original Phase 2 configs — d_outer = d/4 = 64, no frozen inner
+        "hdc_rulebased":      dict(routing="cosine_rule",      R=4, d_outer_div=4, freeze_inner=False),
+        "hdc_gate":           dict(routing="learned_e2e",      R=4, d_outer_div=4, freeze_inner=False),
+        "hdc_stride":         dict(routing="fixed_stride",     R=4, d_outer_div=4, freeze_inner=False),
+        "hdc_r2":             dict(routing="learned_e2e",      R=2, d_outer_div=4, freeze_inner=False),
+        "hdc_r8":             dict(routing="learned_e2e",      R=8, d_outer_div=4, freeze_inner=False),
+        "hdc_e2e_isolated":   dict(routing="learned_isolated", R=4, d_outer_div=4, freeze_inner=False),
+        # Upcycle configs — d_outer = d/2 = 128, inner loaded from mol_best.pt and frozen.
+        # Gradients still flow THROUGH the frozen inner back to Zone E (no inference_mode),
+        # so Zone E receives the full LM gradient signal for concept token quality.
+        "hdc_upcycle_gate":   dict(routing="learned_e2e",      R=4, d_outer_div=2, freeze_inner=True),
+        "hdc_upcycle_stride": dict(routing="fixed_stride",     R=4, d_outer_div=2, freeze_inner=True),
     }
 
     def __init__(
@@ -502,16 +508,18 @@ class HDCModel(nn.Module):
         n_experts:  int = 8,
         mol_rank:   int = 4,
         mol_top_k:  int = 2,
+        mol_ckpt:   str = "",
     ):
         super().__init__()
         if config not in self.CONFIGS:
             raise ValueError(f"Unknown config '{config}'. Valid: {list(self.CONFIGS)}")
 
         cfg = self.CONFIGS[config]
-        self.config_name = config
-        self.R           = cfg["R"]
-        self.d           = d
-        d_outer          = d // 4   # Zone E and D operate at d/4 = 64
+        self.config_name  = config
+        self.R            = cfg["R"]
+        self.d            = d
+        self.freeze_inner = cfg["freeze_inner"]
+        d_outer           = d // cfg["d_outer_div"]
 
         # Shared embedding (weight-tied to lm_head)
         self.embed = nn.Embedding(vocab_size, d)
@@ -526,6 +534,26 @@ class HDCModel(nn.Module):
             n_experts=n_experts, mol_rank=mol_rank, mol_top_k=mol_top_k,
             max_len=seq_len,
         )
+
+        # Upcycle: load Phase 1 mol weights into inner, then freeze.
+        # Gradients flow THROUGH the frozen inner back to Zone E so concept
+        # token quality is optimised by the full LM loss — only parameter
+        # updates are suppressed (requires_grad=False).
+        if self.freeze_inner:
+            if not mol_ckpt:
+                raise ValueError("freeze_inner=True requires mol_ckpt path")
+            raw = torch.load(mol_ckpt, map_location="cpu", weights_only=False)
+            mol_state = raw["model_state"]
+            # ToyTransformer keys: embed.*, blocks.*, norm_out.*, lm_head.*
+            # InnerTransformer keys: blocks.*, norm_out.*  — filter directly
+            inner_keys   = set(self.inner.state_dict().keys())
+            inner_state  = {k: v for k, v in mol_state.items() if k in inner_keys}
+            missing      = inner_keys - set(inner_state.keys())
+            if missing:
+                raise ValueError(f"mol_ckpt missing keys for InnerTransformer: {missing}")
+            self.inner.load_state_dict(inner_state)
+            self.inner.requires_grad_(False)
+            print(f"  Inner transformer loaded from {mol_ckpt} and frozen.")
 
         # Zone D
         self.zone_d = ZoneD(d=d, d_outer=d_outer, seq_len=seq_len)

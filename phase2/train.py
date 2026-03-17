@@ -47,14 +47,17 @@ except Exception:
 
 
 # Configs that have no learned router — compression ratio is always exactly 1/R
-_NO_ROUTER_CONFIGS = {"hdc_rulebased", "hdc_stride"}
+_NO_ROUTER_CONFIGS = {"hdc_rulebased", "hdc_stride", "hdc_upcycle_stride"}
 
 
-def get_lr(step, warmup_steps=1000, max_lr=3e-4, min_lr=1e-5, total_steps=50000):
+def get_lr_scale(step, warmup_steps=1000, total_steps=50000, min_scale=1e-5/3e-4):
+    """Linear warmup + cosine decay. Returns a scale in [min_scale, 1.0].
+    Each param group multiplies this by its own peak_lr, so groups with
+    different peak LRs (e.g. router) follow the same cosine shape."""
     if step < warmup_steps:
-        return min_lr + (max_lr - min_lr) * step / warmup_steps
+        return min_scale + (1.0 - min_scale) * step / warmup_steps
     progress = (step - warmup_steps) / max(1, total_steps - warmup_steps)
-    return min_lr + 0.5 * (max_lr - min_lr) * (1 + math.cos(math.pi * min(progress, 1.0)))
+    return min_scale + 0.5 * (1.0 - min_scale) * (1 + math.cos(math.pi * min(progress, 1.0)))
 
 
 def _unwrap(model):
@@ -170,10 +173,12 @@ def train(
     eval_interval:  int   = 2500,
     log_interval:   int   = 100,
     max_lr:         float = 3e-4,
+    router_lr:      float = 1e-4,
     lambda_comp:    float = 0.1,
     n_experts:      int   = 8,
     mol_rank:       int   = 4,
     mol_top_k:      int   = 2,
+    mol_ckpt:       str   = "",
     resume:         bool  = False,
     no_compile:     bool  = False,
     ckpt_dir:       str   = "checkpoints",
@@ -193,6 +198,7 @@ def train(
         config=config, d=d, n_layers=n_layers, n_heads=n_heads,
         vocab_size=256, seq_len=seq_len,
         n_experts=n_experts, mol_rank=mol_rank, mol_top_k=mol_top_k,
+        mol_ckpt=mol_ckpt,
     ).to(device)
 
     n_params = ParamCounter.count(model)
@@ -203,8 +209,18 @@ def train(
     train_loader = get_dataloader("train", seq_len=seq_len, batch_size=batch_size)
     val_loader   = get_dataloader("val",   seq_len=seq_len, batch_size=batch_size)
 
+    # Separate param groups: router (W_q, W_k) gets a lower LR to prevent the
+    # gradient explosion that occurs when routing activates after the cold-start
+    # phase. Both groups follow the same cosine decay shape via get_lr_scale.
+    _router = model.zone_e.router
+    _router_ids = {id(p) for p in _router.parameters() if p.requires_grad}
+    _main_params   = [p for p in model.parameters() if p.requires_grad and id(p) not in _router_ids]
+    _router_params = [p for p in model.parameters() if p.requires_grad and id(p) in _router_ids]
+    _param_groups  = [{"params": _main_params,   "peak_lr": max_lr,    "lr": max_lr}]
+    if _router_params:
+        _param_groups.append({"params": _router_params, "peak_lr": router_lr, "lr": router_lr})
     optimizer = torch.optim.AdamW(
-        model.parameters(), lr=max_lr, betas=(0.9, 0.95),
+        _param_groups, betas=(0.9, 0.95),
         weight_decay=0.1, fused=(device.type == "cuda"),
     )
     scaler = torch.amp.GradScaler(enabled=use_amp)
@@ -264,9 +280,10 @@ def train(
 
         x, y = x.to(device), y.to(device)
 
-        lr = get_lr(step, total_steps=total_steps, max_lr=max_lr)
+        lr_scale = get_lr_scale(step, total_steps=total_steps)
+        lr = max_lr * lr_scale   # main LR for logging
         for pg in optimizer.param_groups:
-            pg["lr"] = lr
+            pg["lr"] = pg["peak_lr"] * lr_scale
 
         optimizer.zero_grad(set_to_none=True)
         with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=use_amp):
@@ -411,8 +428,12 @@ if __name__ == "__main__":
     parser.add_argument("--eval_interval",  type=int,   default=2500)
     parser.add_argument("--log_interval",   type=int,   default=100)
     parser.add_argument("--max_lr",         type=float, default=3e-4)
+    parser.add_argument("--router_lr",      type=float, default=1e-4,
+                        help="LR for router params (W_q, W_k). Lower than main to prevent cold-start explosion.")
     parser.add_argument("--lambda_comp",    type=float, default=0.1,
                         help="Compression regularizer weight. 0 for rulebased/stride.")
+    parser.add_argument("--mol_ckpt",       type=str,   default="",
+                        help="Path to mol_best.pt for upcycle configs (freeze_inner=True).")
     parser.add_argument("--n_experts",      type=int,   default=8)
     parser.add_argument("--mol_rank",       type=int,   default=4)
     parser.add_argument("--mol_top_k",      type=int,   default=2)
