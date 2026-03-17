@@ -42,8 +42,15 @@ REPORTER_PIDFILE="checkpoints/.reporter.pid"
 python utils/reporter.py --watch --interval 30 &
 REPORTER_PID=$!
 echo "$REPORTER_PID" > "$REPORTER_PIDFILE"
+
+# Track whether the script was interrupted by Ctrl+C.
+# SIGINT sets this flag then re-raises so the EXIT trap fires normally,
+# but shutdown is skipped — giving you a chance to git pull and restart.
+_INTERRUPTED=0
+trap '_INTERRUPTED=1; trap - INT; kill -INT $$' INT
+
 if [ "$SHUTDOWN" = "1" ]; then
-    trap "kill $REPORTER_PID 2>/dev/null; rm -f '$REPORTER_PIDFILE'; python utils/reporter.py; echo ''; echo 'Shutting down instance...'; sudo shutdown -h now" EXIT
+    trap "kill $REPORTER_PID 2>/dev/null; rm -f '$REPORTER_PIDFILE'; python utils/reporter.py; if [ \$_INTERRUPTED -eq 0 ]; then echo ''; echo 'Shutting down instance...'; sudo shutdown -h now; fi" EXIT
 else
     trap "kill $REPORTER_PID 2>/dev/null; rm -f '$REPORTER_PIDFILE'; python utils/reporter.py" EXIT
 fi

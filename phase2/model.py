@@ -41,16 +41,19 @@ from phase1.model import RMSNorm, TransformerBlock
 # Compile-friendly helpers
 # ============================================================
 
-def _parallel_scan(a_t: torch.Tensor, b_t: torch.Tensor) -> torch.Tensor:
+def _parallel_scan(
+    a_t: torch.Tensor, b_t: torch.Tensor, h0: torch.Tensor | None = None
+) -> torch.Tensor:
     """
-    Parallel linear recurrence: h_t = a_t * h_{t-1} + b_t,  h_{-1} = 0.
+    Parallel linear recurrence: h_t = a_t * h_{t-1} + b_t.
 
     a_t, b_t: [B, L, d]   a_t must be in (0, 1] (no zeros).
+    h0:       [B, d]       optional initial state (default: zeros)
     Returns:  [B, L, d]
 
     Closed-form solution via log-space prefix scan (O(1) depth, fully vectorised):
       log_A_t = cumsum(log(a_t), dim=1)          — log of running product A_t
-      h_t     = A_t * cumsum(b_t / A_t, dim=1)  — standard closed form
+      h_t     = A_t * h0 + A_t * cumsum(b_t / A_t, dim=1)
 
     Computed in float32 regardless of input dtype to avoid float16 saturation.
     log_A is clamped to [-80, 0]:
@@ -68,31 +71,9 @@ def _parallel_scan(a_t: torch.Tensor, b_t: torch.Tensor) -> torch.Tensor:
     log_A = torch.log(a.clamp(min=1e-7)).cumsum(dim=1).clamp(min=-80.0)  # [B, L, d]
     A     = log_A.exp()                                                    # [B, L, d]
     h     = A * (b * (-log_A).exp()).cumsum(dim=1)                        # [B, L, d]
+    if h0 is not None:
+        h = h + A * h0.float().unsqueeze(1)
     return h.to(a_t.dtype)
-
-
-def _parallel_scan_with_init(
-    a_t: torch.Tensor, b_t: torch.Tensor, h0: torch.Tensor
-) -> torch.Tensor:
-    """
-    Parallel linear recurrence with non-zero initial state h0.
-
-    h_t = a_t * h_{t-1} + b_t,   h_{-1} = h0
-    a_t, b_t: [B, L, d]    a_t in (0, 1] (no zeros, clamp before calling)
-    h0:       [B, d]        initial hidden state
-    Returns:  [B, L, d]
-
-    Closed form splits into two terms:
-      h_t = A_t * h0 + A_t * cumsum(b_k / A_k)
-    where the first term is the initial-state contribution decayed by A_t.
-    """
-    a = a_t.float()
-    b = b_t.float()
-    h = h0.float().unsqueeze(1)                                            # [B, 1, d]
-    log_A = torch.log(a.clamp(min=1e-7)).cumsum(dim=1).clamp(min=-80.0)  # [B, L, d]
-    A     = log_A.exp()                                                    # [B, L, d]
-    h_out = A * h + A * (b * (-log_A).exp()).cumsum(dim=1)                # [B, L, d]
-    return h_out.to(a_t.dtype)
 
 
 # ============================================================
@@ -161,7 +142,7 @@ class CausalRecurrenceLayer(nn.Module):
         # 3. Recurrence scan with norm conservation
         # Pre-compute b_t = sqrt(1 - a_t²) * (i_t * x_conv) for all timesteps,
         # then run parallel scan (log-space cumsum, fully vectorised, compilable).
-        b_t = torch.sqrt((1.0 - a_t.pow(2)).clamp(min=1e-6)) * (i_t * x_conv)
+        b_t = torch.sqrt((1.0 - a_t * a_t).clamp(min=1e-6)) * (i_t * x_conv)
         out = _parallel_scan(a_t, b_t)                           # [B, L, d]
 
         # 4. Output projection + norm
@@ -410,13 +391,14 @@ class ZoneD(nn.Module):
          Linear d→d/4 → 3× CausalRecurrenceLayer(d/4) → Linear d/4→d → RMSNorm
     """
 
-    def __init__(self, d: int, d_outer: int):
+    def __init__(self, d: int, d_outer: int, seq_len: int = 512):
         super().__init__()
         self.gate_proj  = nn.Linear(d, d, bias=True)
         self.down_proj  = nn.Linear(d, d_outer, bias=False)
         self.recurrence = nn.ModuleList([CausalRecurrenceLayer(d_outer) for _ in range(3)])
         self.up_proj    = nn.Linear(d_outer, d, bias=False)
         self.norm_out   = RMSNorm(d)
+        self.register_buffer("_arange", torch.arange(seq_len), persistent=False)
 
     def forward(
         self,
@@ -435,14 +417,20 @@ class ZoneD(nn.Module):
         # Handle explicitly: h_0 = 1.0 * concept_0 + 0.0 * 0 = concept_0.
         # Positions 1..M-1: use _parallel_scan_with_init(h0=h_0).
         # decay_rest = 1 - p_rest, clamped away from 0 so log is defined.
-        p_at_bounds = boundary_probs.gather(1, boundary_idx)              # [B, M]
+        # Clamp EMA mixing weights to a minimum at selected positions.
+        # If boundary_probs are near-zero (e.g. cosine router with low-contrast
+        # encoder outputs), the EMA degenerates: every h_i ≈ h_0, collapsing
+        # all M concept positions to the first token and making the inner
+        # transformer invisible. min=0.1 ensures each selected boundary does
+        # at least a 10% blend toward its concept token.
+        p_at_bounds = boundary_probs.gather(1, boundary_idx).clamp(min=0.1)  # [B, M]
         h0      = concept_out[:, 0]                                       # [B, d]
         if M > 1:
             p_rest    = p_at_bounds[:, 1:]                                # [B, M-1]
             decay     = (1.0 - p_rest).clamp(min=1e-7)                   # [B, M-1]
             b_rest    = p_rest.unsqueeze(-1) * concept_out[:, 1:]        # [B, M-1, d]
             a_rest    = decay.unsqueeze(-1).expand_as(b_rest)            # [B, M-1, d]
-            h_rest    = _parallel_scan_with_init(a_rest, b_rest, h0)     # [B, M-1, d]
+            h_rest    = _parallel_scan(a_rest, b_rest, h0)               # [B, M-1, d]
             smoothed  = torch.cat([h0.unsqueeze(1), h_rest], dim=1)      # [B, M, d]
         else:
             smoothed  = h0.unsqueeze(1)                                   # [B, 1, d]
@@ -453,8 +441,7 @@ class ZoneD(nn.Module):
         # right=True matches torch.bucketize(..., right=True): returns the count
         # of boundary_idx values <= j, so (count - 1) is the bucket index.
         # Since position 0 is always selected, count >= 1 for all j.
-        arange_L = torch.arange(L, device=boundary_idx.device)
-        queries  = arange_L.unsqueeze(0).expand(B, -1)                   # [B, L]
+        queries  = self._arange[:L].unsqueeze(0).expand(B, -1)           # [B, L]
         count    = torch.searchsorted(                                     # [B, L]
             boundary_idx.contiguous(), queries.contiguous(), right=True,
         )
@@ -541,7 +528,7 @@ class HDCModel(nn.Module):
         )
 
         # Zone D
-        self.zone_d = ZoneD(d=d, d_outer=d_outer)
+        self.zone_d = ZoneD(d=d, d_outer=d_outer, seq_len=seq_len)
 
         # LM head (weight-tied)
         self.lm_head        = nn.Linear(d, vocab_size, bias=False)
