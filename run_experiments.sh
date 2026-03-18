@@ -34,6 +34,15 @@ if [ ! -f "data/enwik8_train.npy" ] || [ ! -f "data/enwik8_val.npy" ]; then
     exit 1
 fi
 
+# ── Verification check ─────────────────────────────────────────────────────────
+# Verifies model code was checked against references/ before this run.
+# Full verification runs locally (Claude Code). This is hash-only, no agents.
+if ! python utils/verify.py check; then
+    echo ""
+    echo "Push a passing verification from your local machine before training."
+    exit 1
+fi
+
 # ── Reporter ───────────────────────────────────────────────────────────────────
 mkdir -p checkpoints
 bash utils/kill_reporter.sh
