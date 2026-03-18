@@ -1,0 +1,234 @@
+# Component: mHC
+
+## Component
+
+**mHC (Manifold-Constrained Hyper-Connections)** — multi-stream residual connections where
+the stream-mixing matrix is constrained to the Birkhoff polytope (doubly stochastic), restoring
+the identity-mapping property of standard residuals while allowing richer cross-stream information
+flow.
+
+---
+
+## Sources
+
+- **Paper:** `sources/papers/mhc_2512.24880.md` — "mHC: Manifold-Constrained Hyper-Connections",
+  DeepSeek, arXiv:2512.24880, December 2025
+- **Code:** `sources/code/mhc_hyper_connections.py` — author reference implementation from
+  `tokenbender/mHC-manifold-constrained-hyper-connections` (GitHub)
+- **Related:** arXiv:2601.05732 ("mHC-lite: You Don't Need 20 Sinkhorn-Knopp Iterations"),
+  cited in the code header, supporting `num_iters=10` as sufficient
+
+---
+
+## Authoritative equations
+
+All equations below are from **arXiv:2512.24880** as transcribed in
+`sources/papers/mhc_2512.24880.md`.
+
+### Standard residual (Eq. 1)
+
+    x_{l+1} = x_l + F(x_l, W_l)
+
+### Core mHC layer update (Eq. 3)
+
+    x_{l+1} = H^res_l · x_l  +  (H^post_l)^T · F(H^pre_l · x_l, W_l)
+
+Where:
+- `x_l ∈ ℝ^(n×C)` — n parallel residual streams, each of width C
+- `H^res_l ∈ ℝ^(n×n)` — stream-mixing matrix (doubly stochastic via Sinkhorn)
+- `H^pre_l ∈ ℝ^(1×n)` — combines n streams into one sublayer input
+- `H^post_l ∈ ℝ^(1×n)` — distributes sublayer output back to n streams
+
+### Multi-layer unrolled (Eq. 4)
+
+    x_L = (∏_{i=1}^{L-l} H^res_{L-i}) · x_l
+          + Σ_{i=l}^{L-1} (∏_{j=1}^{L-1-i} H^res_{L-j}) · (H^post_i)^T · F(H^pre_i · x_i, W_i)
+
+### Manifold constraint — Birkhoff polytope (Eq. 6)
+
+    P_M^res(H^res_l) := { H^res_l ∈ ℝ^(n×n) | H^res_l · 1_n = 1_n,
+                                                1_n^T · H^res_l = 1_n^T,
+                                                H^res_l ≥ 0 }
+
+Row sums = 1, column sums = 1, all entries ≥ 0. Spectral norm ≤ 1. Closed under multiplication.
+
+### Parameterization of H_pre and H_post (Eq. 8)
+
+Paper formulation:
+
+    H^pre_l  = σ(H̃^pre_l)
+    H^post_l = 2σ(H̃^post_l)
+
+where σ = sigmoid. **Note:** the reference code and our implementation use
+`softmax(dim=-1)` instead of sigmoid for both H_pre and H_post (see Deviations below).
+
+### Sinkhorn-Knopp projection (Eq. 9)
+
+    M^(0) = exp(H̃^res_l)
+    M^(t) = T_r(T_c(M^(t-1)))
+
+where T_r and T_c are row and column normalization. Paper uses t_max = 20 iterations.
+
+---
+
+## Reference implementation
+
+Source: `sources/code/mhc_hyper_connections.py` (tokenbender/mHC-manifold-constrained-hyper-connections).
+
+### Log-space Sinkhorn (lines 64–76)
+
+```python
+def sinkhorn_log(logits, num_iters=10, tau=0.05):
+    n = logits.shape[-1]
+    Z = logits / tau
+    log_marginal = torch.zeros((n,), device=logits.device, dtype=logits.dtype)
+
+    u = torch.zeros(logits.shape[:-1], device=Z.device, dtype=Z.dtype)
+    v = torch.zeros_like(u)
+
+    for _ in range(num_iters):
+        u = log_marginal - torch.logsumexp(Z + v.unsqueeze(-2), dim=-1)
+        v = log_marginal - torch.logsumexp(Z + u.unsqueeze(-1), dim=-2)
+
+    return torch.exp(Z + u.unsqueeze(-1) + v.unsqueeze(-2))
+```
+
+`tau=0.05` is a temperature applied before Sinkhorn. `num_iters=10` (paper says 20; mHC-lite
+arXiv:2601.05732 argues fewer suffice). `log_marginal = zeros(n)` targets uniform marginals
+(doubly stochastic). Handles both plain `[n, n]` and batched `[B, L, n, n]` inputs via
+`logits.shape[:-1]` broadcasting.
+
+### Parameter initialization (lines 187–232 in reference code)
+
+```python
+# H_res: near-identity doubly stochastic start
+init_h_res = torch.full((num_residual_streams, num_residual_streams), -8.0)
+init_h_res.fill_diagonal_(0.0)
+self.H_res_logits = nn.Parameter(init_h_res)
+# After sinkhorn_log: diagonal ≈ 1.0, off-diagonal ≈ 0.0  (near identity)
+
+# H_pre: near-one-hot start (picks one stream per view)
+init_h_pre = torch.full((num_input_views, num_residual_streams), -8.0)
+init_h_pre[:, init_residual_index] = 0.0
+self.H_pre_logits = nn.Parameter(init_h_pre)
+# After softmax: one entry ≈ 1.0, rest ≈ 0.0  (hard selection of one stream)
+
+# H_post: uniform start
+self.H_post_logits = nn.Parameter(
+    torch.zeros(num_input_views, num_residual_streams)
+)
+# After softmax: all entries = 1/num_streams  (uniform distribution to all streams)
+```
+
+### width_connection / depth_connection (lines 213–308)
+
+`width_connection` applies H_res (Sinkhorn on `H_res_logits`) and H_pre (softmax on
+`H_pre_logits`) to produce the mixed residual streams and the branch input:
+
+```python
+S = sinkhorn_log(self.H_res_logits, num_iters=self.mhc_num_iters, tau=self.mhc_tau)
+residuals_out = einsum(h_res, maybe_transformed_residuals, "s t, ... s d -> ... t d")
+h_pre = self.H_pre_logits.softmax(dim=-1)
+branch_input = einsum(h_pre, residuals, "v s, ... s d -> ... v d")
+```
+
+`depth_connection` applies H_post (softmax on `H_post_logits`) to distribute the branch
+output back across all streams, then adds to the mixed residual:
+
+```python
+output = einsum(branch_output, beta, "b ... d, s -> b ... s d")
+residuals = self.depth_residual_fn(output, residuals)
+```
+
+---
+
+## Our implementation
+
+**File:** `/home/brandon/Projects/toy-validation/phase1/model.py`
+
+| Symbol | Location |
+|--------|----------|
+| `sinkhorn_log` | line 114 |
+| `HyperConnection.__init__` | line 146 |
+| `HyperConnection.forward` | line 175 |
+| `TransformerBlock._forward_mhc` | line 376 |
+| Stream expansion (embed → [B,L,n,d]) | line 456 |
+| Stream collapse (learned weighted sum) | lines 461–463 |
+
+### Intentional deviations from the paper (matching reference code)
+
+1. **softmax instead of sigmoid for H_pre / H_post.**
+   Paper Eq. 8 uses `σ(H̃^pre)` and `2σ(H̃^post)`. The reference code and our implementation
+   use `F.softmax(dim=-1)` for both. Softmax enforces Σ = 1 and non-negativity; sigmoid does
+   not enforce Σ = 1. Our code comment at line 201 explicitly notes this matches
+   `tokenbender/mHC`.
+
+2. **H_pre / H_post are 1-D vectors (shape `[n]`), not matrices.**
+   The paper uses `H^pre ∈ ℝ^(1×n)` and `H^post ∈ ℝ^(1×n)` for a single-view case
+   (`num_input_views=1`). Our `HyperConnection` always uses single-view, so these are stored
+   as `[n]` tensors. Functionally equivalent.
+
+3. **Log-space Sinkhorn with τ=0.05, n_iters=10.**
+   Paper Eq. 9 describes standard (exp + normalize) Sinkhorn with t_max=20. Reference code
+   and our implementation use numerically stable log-space Sinkhorn (matching the reference
+   code exactly) with τ=0.05 and 10 iterations.
+
+4. **Dynamic variant (DHC) adds an input-conditional H_res.**
+   When `dynamic=True` (line 157–159), `H_res` is computed per-token from a linear projection
+   of the mean-pooled stream state plus a learned bias initialized near-identity. This is an
+   extension beyond the static mHC in the paper; it is controlled by `mhc_dynamic` config
+   flag and defaults to `False`.
+
+5. **Stream collapse uses learned softmax weights, not a fixed operation.**
+   After all blocks, streams are collapsed via:
+   ```python
+   w = F.softmax(self.stream_collapse_logits, dim=0)
+   h = torch.einsum("blnd, n -> bld", h, w)
+   ```
+   (lines 462–463). `stream_collapse_logits` is initialized to zeros (uniform at start).
+   The paper does not specify a collapse operation; this is our design choice.
+
+6. **n_streams=2 in toy configs.**
+   Paper experiments use n=4. We use n=2 for parameter-budget reasons at the 5M toy scale.
+   The math is identical; only the expansion factor differs.
+
+---
+
+## Verification checklist
+
+1. **Doubly stochastic output:** After `sinkhorn_log`, verify `H_res.sum(dim=-1)` ≈ 1.0 and
+   `H_res.sum(dim=-2)` ≈ 1.0 for all entries; verify all entries ≥ 0.
+
+2. **Near-identity initialization:** At init (before any gradient steps), confirm `H_res`
+   diagonal ≈ 1.0 and off-diagonal entries are near 0 (should be < 0.01 with -8 logits and
+   τ=0.05).
+
+3. **H_pre near-one-hot at init:** At init, confirm `pre_weights = softmax(pre_logits)` has
+   one entry near 1.0 and the rest near 0.0 (from -8 off-diagonal init).
+
+4. **H_post uniform at init:** At init, confirm `post_weights = softmax(post_logits)` ≈
+   `[1/n, ..., 1/n]` (from zeros init).
+
+5. **Stream divergence:** Verify that after several training steps with n_streams=2, the two
+   stream vectors are no longer identical. Without H_post broadcasting different weights,
+   streams cannot diverge (see model.py comment at lines 109–112).
+
+6. **mHC forward shapes:** Confirm `_forward_mhc` receives `[B, L, n, d]` and returns
+   `[B, L, n, d]`; confirm `HyperConnection.forward` receives `[B, L, n, d]` and returns
+   `[B, L, n, d]`.
+
+7. **Stream expansion:** Confirm the `.clone()` at line 456 is present — without it, the
+   expand creates a view and all streams share memory, which would break the divergence
+   mechanism.
+
+8. **Stream collapse weights:** Confirm `stream_collapse_logits` is initialized to zeros and
+   that `softmax` is applied (not raw logits) before the einsum.
+
+9. **Pre-norm inside branch_fn:** Confirm the lambda at lines 387–388 applies `norm1`/`norm2`
+   inside the branch callable, so that the normalized input goes to the sublayer while the
+   un-normalized stream participates in H_res mixing. This matches the paper's structure where
+   F() operates on the pre-processed branch input, not the raw stream.
+
+10. **Sinkhorn τ and n_iters match reference:** Confirm `sinkhorn_log` in our code uses
+    `tau=0.05` and `n_iters=10`, matching the reference code defaults (not the paper's
+    t_max=20).

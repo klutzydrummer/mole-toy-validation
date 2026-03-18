@@ -1,4 +1,17 @@
 {
   "_note": "Updated by utils/verify.py --full. Do not edit manually.",
-  "files": {}
+  "files": {
+    "phase1/model.py": {
+      "git_hash": "b37dc28aa6e07680debc8df4376a6be39b0d01ff",
+      "verified_at": "2026-03-18T02:03:16Z",
+      "result": "pass",
+      "report": "phase_b_prime_all_6_components"
+    },
+    "phase2/model.py": {
+      "git_hash": "c7b4a33bb7e2147257be35c00024cfe4464c2892",
+      "verified_at": "2026-03-18T02:03:16Z",
+      "result": "pass",
+      "report": "phase_b_prime_all_6_components"
+    }
+  }
 }
