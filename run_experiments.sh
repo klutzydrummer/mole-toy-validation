@@ -21,10 +21,14 @@
 
 set -e
 
-TARGET="${1:-all}"
+TARGET="all"
 SHUTDOWN=0
 for arg in "$@"; do
-  [ "$arg" = "--shutdown" ] && SHUTDOWN=1
+  if [ "$arg" = "--shutdown" ]; then
+    SHUTDOWN=1
+  elif [[ "$arg" != --* ]]; then
+    TARGET="$arg"
+  fi
 done
 
 # ── Sanity checks ──────────────────────────────────────────────────────────────
