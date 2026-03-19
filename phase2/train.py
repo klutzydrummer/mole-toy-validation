@@ -164,7 +164,7 @@ def evaluate_per_position(model, val_loader, device, boundary_idx_key, max_batch
 
 def train(
     config:         str   = "hdc_rulebased",
-    d:              int   = 256,
+    d:              int   = 512,
     n_layers:       int   = 8,
     n_heads:        int   = 8,
     seq_len:        int   = 256,
@@ -176,7 +176,7 @@ def train(
     router_lr:      float = 1e-4,
     lambda_comp:    float = 0.1,
     n_experts:      int   = 8,
-    mol_rank:       int   = 4,
+    mol_rank:       int   = 8,
     mol_top_k:      int   = 2,
     mol_ckpt:       str   = "",
     resume:         bool  = False,
@@ -424,7 +424,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Phase 2 HDC Training")
     parser.add_argument("--config", type=str, default="hdc_rulebased",
                         choices=list(HDCModel.CONFIGS))
-    parser.add_argument("--d",              type=int,   default=256)
+    parser.add_argument("--d",              type=int,   default=512)
     parser.add_argument("--n_layers",       type=int,   default=8)
     parser.add_argument("--n_heads",        type=int,   default=8)
     parser.add_argument("--seq_len",        type=int,   default=256)
@@ -441,7 +441,7 @@ if __name__ == "__main__":
     parser.add_argument("--mol_ckpt",       type=str,   default="",
                         help="Path to mol_best.pt for upcycle configs (freeze_inner=True).")
     parser.add_argument("--n_experts",      type=int,   default=8)
-    parser.add_argument("--mol_rank",       type=int,   default=4)
+    parser.add_argument("--mol_rank",       type=int,   default=8)
     parser.add_argument("--mol_top_k",      type=int,   default=2)
     parser.add_argument("--resume",         action="store_true")
     parser.add_argument("--no_compile",     action="store_true")

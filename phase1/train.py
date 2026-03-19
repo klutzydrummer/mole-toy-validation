@@ -68,12 +68,12 @@ def evaluate(model, val_loader, device, max_batches=50):
     return total_loss / max(1, n_batches)
 
 
-def train(config: str, d: int = 256, n_layers: int = 8, n_heads: int = 8,
+def train(config: str, d: int = 512, n_layers: int = 8, n_heads: int = 8,
           seq_len: int = 256, batch_size: int = 32, total_steps: int = 50000,
           eval_interval: int = 2500, log_interval: int = 100,
           max_lr: float = 3e-4, ckpt_dir: str = "checkpoints",
           mhc_dynamic: bool = False, n_experts: int = 8,
-          mol_rank: int = 4, mol_top_k: int = 2,
+          mol_rank: int = 8, mol_top_k: int = 2,
           resume: bool = False, no_compile: bool = False,
           tokenizer: str = "bpe",
           teamspace: str = "mole-toy-validation-project"):
@@ -274,7 +274,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Phase 1 Training")
     parser.add_argument("--config", type=str, default="baseline",
                         choices=["baseline", "mhc", "mol", "compose"])
-    parser.add_argument("--d", type=int, default=256)
+    parser.add_argument("--d", type=int, default=512)
     parser.add_argument("--n_layers", type=int, default=8)
     parser.add_argument("--n_heads", type=int, default=8)
     parser.add_argument("--seq_len", type=int, default=256)
@@ -286,7 +286,7 @@ if __name__ == "__main__":
     parser.add_argument("--max_lr", type=float, default=3e-4)
     parser.add_argument("--mhc_dynamic", action="store_true")
     parser.add_argument("--n_experts", type=int, default=8)
-    parser.add_argument("--mol_rank", type=int, default=4)
+    parser.add_argument("--mol_rank", type=int, default=8)
     parser.add_argument("--mol_top_k", type=int, default=2)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--no_compile", action="store_true")

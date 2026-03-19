@@ -80,6 +80,9 @@ run_phase1() {
 
     python phase1/train.py \
         --config    "$cfg" \
+        --d            512 \
+        --n_heads      8 \
+        --mol_rank     8 \
         --total_steps  50000 \
         --batch_size   32 \
         --seq_len      256 \
@@ -117,6 +120,9 @@ run_phase2() {
 
     python phase2/train.py \
         --config    "$cfg" \
+        --d            512 \
+        --n_heads      8 \
+        --mol_rank     8 \
         --total_steps  "$steps" \
         --batch_size   32 \
         --seq_len      256 \
