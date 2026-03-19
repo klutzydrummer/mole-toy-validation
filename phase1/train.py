@@ -23,7 +23,7 @@ import torch.nn.functional as F
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from phase1.model import ToyTransformer
-from utils.data import get_dataloader
+from utils.data import get_dataloader, set_tokenizer, get_vocab_size
 from utils.metrics import ce_to_bpc, TrainLogger, ParamCounter
 
 # LightningLogger is only available inside Lightning.ai Studios — degrade gracefully elsewhere.
@@ -69,17 +69,21 @@ def evaluate(model, val_loader, device, max_batches=50):
 
 
 def train(config: str, d: int = 256, n_layers: int = 8, n_heads: int = 8,
-          seq_len: int = 512, batch_size: int = 32, total_steps: int = 50000,
+          seq_len: int = 256, batch_size: int = 32, total_steps: int = 50000,
           eval_interval: int = 2500, log_interval: int = 100,
           max_lr: float = 3e-4, ckpt_dir: str = "checkpoints",
           mhc_dynamic: bool = False, n_experts: int = 8,
           mol_rank: int = 4, mol_top_k: int = 2,
           resume: bool = False, no_compile: bool = False,
+          tokenizer: str = "bpe",
           teamspace: str = "mole-toy-validation-project"):
 
     print(f"\n{'='*60}")
     print(f"Phase 1 Training: config={config}")
     print(f"{'='*60}\n")
+
+    set_tokenizer(tokenizer)
+    vocab_size = get_vocab_size()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     use_amp = (device.type == "cuda")
@@ -91,7 +95,7 @@ def train(config: str, d: int = 256, n_layers: int = 8, n_heads: int = 8,
     # Model
     model = ToyTransformer(
         config=config, d=d, n_layers=n_layers, n_heads=n_heads,
-        vocab_size=256, max_len=seq_len + 64,
+        vocab_size=vocab_size, max_len=seq_len + 64,
         mhc_dynamic=mhc_dynamic, n_experts=n_experts,
         mol_rank=mol_rank, mol_top_k=mol_top_k,
     ).to(device)
@@ -254,6 +258,7 @@ def train(config: str, d: int = 256, n_layers: int = 8, n_heads: int = 8,
         "best_val_bpc": best_val_bpc, "elapsed_seconds": elapsed,
         "d": d, "n_layers": n_layers, "n_heads": n_heads,
         "seq_len": seq_len, "batch_size": batch_size,
+        "tokenizer": tokenizer, "vocab_size": vocab_size,
     }
     with open(os.path.join(ckpt_dir, f"{config}_summary.json"), "w") as f:
         json.dump(summary, f, indent=2)
@@ -272,7 +277,8 @@ if __name__ == "__main__":
     parser.add_argument("--d", type=int, default=256)
     parser.add_argument("--n_layers", type=int, default=8)
     parser.add_argument("--n_heads", type=int, default=8)
-    parser.add_argument("--seq_len", type=int, default=512)
+    parser.add_argument("--seq_len", type=int, default=256)
+    parser.add_argument("--tokenizer", type=str, default="bpe", choices=["char", "bpe"])
     parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--total_steps", type=int, default=50000)
     parser.add_argument("--eval_interval", type=int, default=2500)

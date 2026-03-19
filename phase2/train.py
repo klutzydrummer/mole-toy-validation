@@ -34,7 +34,7 @@ import torch.nn.functional as F
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from phase2.model import HDCModel
-from utils.data import get_dataloader
+from utils.data import get_dataloader, set_tokenizer, get_vocab_size
 from utils.metrics import ce_to_bpc, TrainLogger, ParamCounter
 
 try:
@@ -167,7 +167,7 @@ def train(
     d:              int   = 256,
     n_layers:       int   = 8,
     n_heads:        int   = 8,
-    seq_len:        int   = 512,
+    seq_len:        int   = 256,
     batch_size:     int   = 32,
     total_steps:    int   = 50000,
     eval_interval:  int   = 2500,
@@ -183,10 +183,14 @@ def train(
     no_compile:     bool  = False,
     ckpt_dir:       str   = "checkpoints",
     teamspace:      str   = "mole-toy-validation-project",
+    tokenizer:      str   = "bpe",
 ):
     print(f"\n{'='*60}")
     print(f"Phase 2 Training: config={config}")
     print(f"{'='*60}\n")
+
+    set_tokenizer(tokenizer)
+    vocab_size = get_vocab_size()
 
     device  = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     use_amp = device.type == "cuda"
@@ -196,7 +200,7 @@ def train(
 
     model = HDCModel(
         config=config, d=d, n_layers=n_layers, n_heads=n_heads,
-        vocab_size=256, seq_len=seq_len,
+        vocab_size=vocab_size, seq_len=seq_len,
         n_experts=n_experts, mol_rank=mol_rank, mol_top_k=mol_top_k,
         mol_ckpt=mol_ckpt,
     ).to(device)
@@ -404,6 +408,7 @@ def train(
         "d": d, "n_layers": n_layers, "n_heads": n_heads,
         "seq_len": seq_len, "batch_size": batch_size,
         "R": _unwrap(model).R, "lambda_comp": effective_lambda,
+        "tokenizer": tokenizer, "vocab_size": vocab_size,
     }
     with open(os.path.join(ckpt_dir, f"{config}_summary.json"), "w") as f:
         json.dump(summary, f, indent=2)
@@ -422,7 +427,8 @@ if __name__ == "__main__":
     parser.add_argument("--d",              type=int,   default=256)
     parser.add_argument("--n_layers",       type=int,   default=8)
     parser.add_argument("--n_heads",        type=int,   default=8)
-    parser.add_argument("--seq_len",        type=int,   default=512)
+    parser.add_argument("--seq_len",        type=int,   default=256)
+    parser.add_argument("--tokenizer",      type=str,   default="bpe", choices=["char", "bpe"])
     parser.add_argument("--batch_size",     type=int,   default=32)
     parser.add_argument("--total_steps",    type=int,   default=50000)
     parser.add_argument("--eval_interval",  type=int,   default=2500)

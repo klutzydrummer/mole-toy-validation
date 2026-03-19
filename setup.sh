@@ -6,7 +6,7 @@ python -c "import torch; print(f'PyTorch {torch.__version__}')" 2>/dev/null || {
     echo "Installing PyTorch..."
     pip install torch --quiet
 }
-pip install numpy matplotlib tqdm --quiet
+pip install numpy matplotlib tqdm sentencepiece --quiet
 
 echo ""
 echo "=== Downloading enwik8 ==="
@@ -20,8 +20,12 @@ else
 fi
 
 echo ""
-echo "=== Preparing splits ==="
-python utils/data.py --prepare
+echo "=== Preparing character splits ==="
+python utils/data.py --prepare-char
+
+echo ""
+echo "=== Training BPE tokeniser and preparing BPE splits ==="
+python utils/data.py --prepare-bpe
 
 echo ""
 python -c "
@@ -35,5 +39,5 @@ print(f'SDPA: {hasattr(torch.nn.functional, \"scaled_dot_product_attention\")}')
 
 echo ""
 echo "=== Ready ==="
-echo "  Train:  python phase1/train.py --config baseline"
-echo "  Resume: python phase1/train.py --config baseline --resume"
+echo "  Train (BPE):  python phase1/train.py --config baseline"
+echo "  Resume:       python phase1/train.py --config baseline --resume"

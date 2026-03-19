@@ -19,14 +19,20 @@ CKPT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 REPORT_PATH = os.path.join(CKPT_DIR, "report.md")
 
 PHASE1_CONFIGS  = ["baseline", "mhc", "mol", "compose"]
-PHASE2_CONFIGS  = ["hdc_rulebased", "hdc_gate", "hdc_stride", "hdc_r2", "hdc_r8", "hdc_e2e_isolated"]
-UPCYCLE_CONFIGS = ["hdc_upcycle_stride", "hdc_upcycle_gate"]
-CONFIGS = PHASE1_CONFIGS + PHASE2_CONFIGS + UPCYCLE_CONFIGS
+PHASE2_CONFIGS  = [
+    "hdc_rulebased", "hdc_gate", "hdc_stride", "hdc_r2", "hdc_r8",
+    "hdc_e2e_isolated", "hdc_upcycle_stride", "hdc_upcycle_gate",
+]
+CONFIGS = PHASE1_CONFIGS + PHASE2_CONFIGS
 
-# Total training steps per config group
+# Total training steps per config
 _TOTAL_STEPS = {c: 50000 for c in PHASE1_CONFIGS + PHASE2_CONFIGS}
-_TOTAL_STEPS.update({c: 25000 for c in UPCYCLE_CONFIGS})
+_TOTAL_STEPS["hdc_upcycle_stride"] = 25000
+_TOTAL_STEPS["hdc_upcycle_gate"]   = 25000
 TOTAL_STEPS = 50000  # kept for backwards compat
+
+# Configs that use a frozen mol inner (upcycle)
+_UPCYCLE_CONFIGS = {"hdc_upcycle_stride", "hdc_upcycle_gate"}
 
 
 # ── data loading ─────────────────────────────────────────────────────────────
@@ -239,7 +245,7 @@ def analyze_config(config):
             for r in pos_records if "boundary_bpc" in r
         ]
 
-    phase = 1 if config in PHASE1_CONFIGS else ("upcycle" if config in UPCYCLE_CONFIGS else 2)
+    phase = 1 if config in PHASE1_CONFIGS else 2
     total_steps = _TOTAL_STEPS.get(config, TOTAL_STEPS)
 
     result = {
@@ -447,18 +453,15 @@ def next_steps(analyses):
 
     p1_analyses  = [a for a in analyses if a["phase"] == 1]
     p2_analyses  = [a for a in analyses if a["phase"] == 2]
-    upc_analyses = [a for a in analyses if a["phase"] == "upcycle"]
-    p1_running   = [a for a in p1_analyses  if a["summary"] is None and a["current_step"] > 0]
-    p2_running   = [a for a in p2_analyses  if a["summary"] is None and a["current_step"] > 0]
-    upc_running  = [a for a in upc_analyses if a["summary"] is None and a["current_step"] > 0]
-    p1_complete  = [a for a in p1_analyses  if a["summary"] is not None]
-    p2_complete  = [a for a in p2_analyses  if a["summary"] is not None]
-    upc_complete = [a for a in upc_analyses if a["summary"] is not None]
+    p1_running   = [a for a in p1_analyses if a["summary"] is None and a["current_step"] > 0]
+    p2_running   = [a for a in p2_analyses if a["summary"] is None and a["current_step"] > 0]
+    p1_complete  = [a for a in p1_analyses if a["summary"] is not None]
+    p2_complete  = [a for a in p2_analyses if a["summary"] is not None]
 
     # Still running
-    for a in p1_running + p2_running + upc_running:
+    for a in p1_running + p2_running:
         steps.append(f"Wait for `{a['config']}` to complete ({a['progress_pct']:.0f}%).")
-    if p1_running or p2_running or upc_running:
+    if p1_running or p2_running:
         return steps
 
     # Phase 1 not started
@@ -496,10 +499,9 @@ def next_steps(analyses):
         return steps
 
     # Everything done
-    mol           = next((a for a in analyses if a["config"] == "mol"),              None)
-    hdc_gate      = next((a for a in analyses if a["config"] == "hdc_gate"),         None)
-    upc_gate      = next((a for a in analyses if a["config"] == "hdc_upcycle_gate"), None)
-    upc_stride    = next((a for a in analyses if a["config"] == "hdc_upcycle_stride"), None)
+    mol      = next((a for a in analyses if a["config"] == "mol"),              None)
+    hdc_gate = next((a for a in analyses if a["config"] == "hdc_gate"),         None)
+    upc_gate = next((a for a in analyses if a["config"] == "hdc_upcycle_gate"), None)
 
     if hdc_gate and mol and hdc_gate["best_val_bpc"] and mol["best_val_bpc"]:
         if hdc_gate["best_val_bpc"] < mol["best_val_bpc"] - 0.001:
@@ -510,14 +512,9 @@ def next_steps(analyses):
         else:
             steps.append(
                 "**HDC did not improve over mol at toy scale.** "
-                "Run upcycle: `bash run_experiments.sh upcycle`"
+                "Check upcycle configs (hdc_upcycle_stride, hdc_upcycle_gate) for comparison."
             )
 
-    # Upcycle not started
-    if p2_complete and not upc_complete and not upc_running:
-        steps.append("Start upcycle: `bash run_experiments.sh upcycle --shutdown`")
-
-    # Upcycle outcome
     if upc_gate and mol and upc_gate["best_val_bpc"] and mol["best_val_bpc"]:
         if upc_gate["best_val_bpc"] < mol["best_val_bpc"] - 0.001:
             steps.append(
@@ -545,9 +542,8 @@ def render_report(analyses):
     ]
 
     # ── Results tables (top — highest signal) ────────────────────────────────
-    p1_complete  = [a for a in analyses if a["phase"] == 1        and a["best_val_bpc"] is not None]
-    p2_complete  = [a for a in analyses if a["phase"] == 2        and a["best_val_bpc"] is not None]
-    upc_complete = [a for a in analyses if a["phase"] == "upcycle" and a["best_val_bpc"] is not None]
+    p1_complete  = [a for a in analyses if a["phase"] == 1 and a["best_val_bpc"] is not None]
+    p2_complete  = [a for a in analyses if a["phase"] == 2 and a["best_val_bpc"] is not None]
     baseline_bpc = next((a["best_val_bpc"] for a in p1_complete if a["config"] == "baseline"), None)
     mol_bpc      = next((a["best_val_bpc"] for a in p1_complete if a["config"] == "mol"),      None)
 
@@ -564,25 +560,15 @@ def render_report(analyses):
 
     if p2_complete:
         lines += ["## Phase 2 Results", ""]
-        lines.append("| Rank | Config | Best Val BPC | vs mol | R | Params | Time |")
-        lines.append("|------|--------|--------------|--------|---|--------|------|")
+        lines.append("| Rank | Config | Type | Best Val BPC | vs mol | R | Params | Time |")
+        lines.append("|------|--------|------|--------------|--------|---|--------|------|")
         for i, a in enumerate(sorted(p2_complete, key=lambda x: x["best_val_bpc"]), 1):
             vs     = f"{a['best_val_bpc'] - mol_bpc:+.4f}" if mol_bpc else "—"
             R      = a["summary"].get("R", "?") if a["summary"] else "?"
             params = f"{a['summary']['n_params']:,}" if a["summary"] else "—"
             mins   = f"{a['summary']['elapsed_seconds']/60:.0f}m" if a["summary"] else "—"
-            lines.append(f"| {i} | `{a['config']}` | {a['best_val_bpc']:.4f} | {vs} | {R} | {params} | {mins} |")
-        lines += [""]
-
-    if upc_complete:
-        lines += ["## Upcycle Results", ""]
-        lines.append("| Rank | Config | Best Val BPC | vs mol | Params | Time |")
-        lines.append("|------|--------|--------------|--------|--------|------|")
-        for i, a in enumerate(sorted(upc_complete, key=lambda x: x["best_val_bpc"]), 1):
-            vs     = f"{a['best_val_bpc'] - mol_bpc:+.4f}" if mol_bpc else "—"
-            params = f"{a['summary']['n_params']:,}" if a["summary"] else "—"
-            mins   = f"{a['summary']['elapsed_seconds']/60:.0f}m" if a["summary"] else "—"
-            lines.append(f"| {i} | `{a['config']}` | {a['best_val_bpc']:.4f} | {vs} | {params} | {mins} |")
+            typ    = "upcycle" if a["config"] in _UPCYCLE_CONFIGS else "e2e"
+            lines.append(f"| {i} | `{a['config']}` | {typ} | {a['best_val_bpc']:.4f} | {vs} | {R} | {params} | {mins} |")
         lines += [""]
 
     # ── Progress summary (for in-progress runs) ───────────────────────────────

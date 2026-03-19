@@ -1,22 +1,22 @@
 #!/bin/bash
 # Run all MoLE toy validation experiments in sequence.
-# Covers Phase 1 (4 configs) and Phase 2 (6 HDC configs).
+# Covers Phase 1 (4 configs) and Phase 2 (8 HDC configs, including upcycle).
 # Every config auto-resumes from checkpoint if interrupted.
 #
 # Usage:
 #   bash run_experiments.sh                      # run everything (default)
 #   bash run_experiments.sh phase1               # Phase 1 only
-#   bash run_experiments.sh phase2               # Phase 2 only
+#   bash run_experiments.sh phase2               # Phase 2 only (all 8 configs)
 #   bash run_experiments.sh baseline             # single Phase 1 config
 #   bash run_experiments.sh hdc_gate             # single Phase 2 config
 #   bash run_experiments.sh phase2 --shutdown    # shutdown instance when done
 #
 # Phase 2 run order is enforced: hdc_rulebased always runs before hdc_gate.
-# This validates the pipeline (Zone E → inner → Zone D) before adding learned routing.
+# Upcycle configs require checkpoints/mol_best.pt (run mol first).
 #
 # On Lightning.ai free tier (T4):
 #   Phase 1: ~4-5 hours total (4 configs × ~45-75 min)
-#   Phase 2: ~6-8 hours total (6 configs × ~60-90 min)
+#   Phase 2: ~8-10 hours total (8 configs × ~60-90 min)
 #   Session interrupted? Re-run the same command — all configs auto-resume.
 
 set -e
@@ -28,8 +28,8 @@ for arg in "$@"; do
 done
 
 # ── Sanity checks ──────────────────────────────────────────────────────────────
-if [ ! -f "data/enwik8_train.npy" ] || [ ! -f "data/enwik8_val.npy" ]; then
-    echo "ERROR: data/enwik8_train.npy or data/enwik8_val.npy not found."
+if [ ! -f "data/enwik8_bpe_train.npy" ] || [ ! -f "data/enwik8_bpe_val.npy" ]; then
+    echo "ERROR: BPE data splits not found."
     echo "       Run: bash setup.sh"
     exit 1
 fi
@@ -82,15 +82,18 @@ run_phase1() {
         --config    "$cfg" \
         --total_steps  50000 \
         --batch_size   32 \
-        --seq_len      512 \
+        --seq_len      256 \
         --eval_interval 2500 \
         --log_interval  100 \
         $RESUME_FLAG
 }
 
 # ── Phase 2 runner ─────────────────────────────────────────────────────────────
+# args: <config> [total_steps] [mol_ckpt]
 run_phase2() {
     local cfg="$1"
+    local steps="${2:-50000}"
+    local mol_ckpt="${3:-}"
     echo ""
     echo "========================================"
     echo "  Phase 2: $cfg"
@@ -102,44 +105,24 @@ run_phase2() {
         RESUME_FLAG="--resume"
     fi
 
-    python phase2/train.py \
-        --config    "$cfg" \
-        --total_steps  50000 \
-        --batch_size   32 \
-        --seq_len      512 \
-        --eval_interval 2500 \
-        --log_interval  100 \
-        $RESUME_FLAG
-}
-
-# ── Upcycle runner (25k steps, frozen mol inner, d_outer=d/2) ──────────────────
-run_upcycle() {
-    local cfg="$1"
-    echo ""
-    echo "========================================"
-    echo "  Upcycle: $cfg"
-    echo "========================================"
-
-    if [ ! -f "checkpoints/mol_best.pt" ]; then
-        echo "ERROR: checkpoints/mol_best.pt not found."
-        echo "       Run phase1 mol first: bash run_experiments.sh mol"
-        exit 1
-    fi
-
-    RESUME_FLAG=""
-    if [ -f "checkpoints/${cfg}_latest.pt" ]; then
-        echo "  Found checkpoint — resuming."
-        RESUME_FLAG="--resume"
+    MOL_FLAG=""
+    if [ -n "$mol_ckpt" ]; then
+        if [ ! -f "$mol_ckpt" ]; then
+            echo "ERROR: mol_ckpt not found: $mol_ckpt"
+            echo "       Run phase1 mol first: bash run_experiments.sh mol"
+            exit 1
+        fi
+        MOL_FLAG="--mol_ckpt $mol_ckpt"
     fi
 
     python phase2/train.py \
         --config    "$cfg" \
-        --total_steps  25000 \
+        --total_steps  "$steps" \
         --batch_size   32 \
-        --seq_len      512 \
+        --seq_len      256 \
         --eval_interval 2500 \
         --log_interval  100 \
-        --mol_ckpt  "checkpoints/mol_best.pt" \
+        $MOL_FLAG \
         $RESUME_FLAG
 }
 
@@ -160,6 +143,8 @@ case "$TARGET" in
     run_phase2 hdc_r2
     run_phase2 hdc_r8
     run_phase2 hdc_e2e_isolated
+    run_phase2 hdc_upcycle_stride 25000 "checkpoints/mol_best.pt"
+    run_phase2 hdc_upcycle_gate   25000 "checkpoints/mol_best.pt"
     ;;
 
   phase1)
@@ -177,12 +162,8 @@ case "$TARGET" in
     run_phase2 hdc_r2
     run_phase2 hdc_r8
     run_phase2 hdc_e2e_isolated
-    ;;
-
-  upcycle)
-    # hdc_upcycle_stride first (lower bound, validates pipeline)
-    run_upcycle hdc_upcycle_stride
-    run_upcycle hdc_upcycle_gate
+    run_phase2 hdc_upcycle_stride 25000 "checkpoints/mol_best.pt"
+    run_phase2 hdc_upcycle_gate   25000 "checkpoints/mol_best.pt"
     ;;
 
   # Individual Phase 1 configs
@@ -190,9 +171,8 @@ case "$TARGET" in
     run_phase1 "$TARGET"
     ;;
 
-  # Individual Phase 2 configs
+  # Individual Phase 2 configs (standard, 50k steps)
   hdc_rulebased | hdc_gate | hdc_stride | hdc_r2 | hdc_r8 | hdc_e2e_isolated)
-    # Safety: warn if running hdc_gate before hdc_rulebased
     if [ "$TARGET" = "hdc_gate" ] && [ ! -f "checkpoints/hdc_rulebased_summary.json" ]; then
         echo "WARNING: hdc_rulebased has not completed yet."
         echo "         hdc_rulebased validates the HDC pipeline before learned routing."
@@ -203,17 +183,20 @@ case "$TARGET" in
     run_phase2 "$TARGET"
     ;;
 
-  # Individual upcycle configs
-  hdc_upcycle_gate | hdc_upcycle_stride)
-    run_upcycle "$TARGET"
+  # Individual upcycle configs (25k steps, requires mol_best.pt)
+  hdc_upcycle_stride)
+    run_phase2 hdc_upcycle_stride 25000 "checkpoints/mol_best.pt"
+    ;;
+  hdc_upcycle_gate)
+    run_phase2 hdc_upcycle_gate 25000 "checkpoints/mol_best.pt"
     ;;
 
   *)
     echo "ERROR: Unknown target '$TARGET'"
-    echo "Usage: bash run_experiments.sh [all|phase1|phase2|upcycle|<config>]"
+    echo "Usage: bash run_experiments.sh [all|phase1|phase2|<config>]"
     echo "Phase 1 configs: baseline mhc mol compose"
     echo "Phase 2 configs: hdc_rulebased hdc_gate hdc_stride hdc_r2 hdc_r8 hdc_e2e_isolated"
-    echo "Upcycle configs: hdc_upcycle_stride hdc_upcycle_gate"
+    echo "                 hdc_upcycle_stride hdc_upcycle_gate  (require mol_best.pt)"
     exit 1
     ;;
 esac
@@ -227,8 +210,10 @@ python - <<'EOF'
 import json, os, glob
 
 PHASE1 = ["baseline", "mhc", "mol", "compose"]
-PHASE2 = ["hdc_rulebased", "hdc_gate", "hdc_stride", "hdc_r2", "hdc_r8", "hdc_e2e_isolated"]
-UPCYCLE = ["hdc_upcycle_stride", "hdc_upcycle_gate"]
+PHASE2 = [
+    "hdc_rulebased", "hdc_gate", "hdc_stride", "hdc_r2", "hdc_r8",
+    "hdc_e2e_isolated", "hdc_upcycle_stride", "hdc_upcycle_gate",
+]
 
 def print_phase(label, configs):
     rows = []
@@ -241,28 +226,26 @@ def print_phase(label, configs):
     if not rows:
         return
     print(f"\n{label}")
-    print(f"{'Config':<22} {'Best BPC':>10} {'Params':>12}")
-    print("-" * 46)
+    print(f"{'Config':<26} {'Best BPC':>10} {'Params':>12}")
+    print("-" * 50)
     for cfg, bpc, params in rows:
-        print(f"{cfg:<22} {bpc:>10.4f} {params:>12,}")
+        print(f"{cfg:<26} {bpc:>10.4f} {params:>12,}")
 
-print_phase("Phase 1",   PHASE1)
-print_phase("Phase 2",   PHASE2)
-print_phase("Upcycle",   UPCYCLE)
+print_phase("Phase 1", PHASE1)
+print_phase("Phase 2", PHASE2)
 
 # Cross-phase comparison: best Phase 2 vs mol baseline
-import os
 mol_path = "checkpoints/mol_summary.json"
 p2_paths = [f"checkpoints/{c}_summary.json" for c in PHASE2]
 if os.path.exists(mol_path) and any(os.path.exists(p) for p in p2_paths):
     with open(mol_path) as f:
         mol_bpc = json.load(f)["best_val_bpc"]
-    print(f"\nPhase 2 + Upcycle vs mol baseline ({mol_bpc:.4f}):")
-    for cfg in PHASE2 + UPCYCLE:
+    print(f"\nPhase 2 vs mol baseline ({mol_bpc:.4f}):")
+    for cfg in PHASE2:
         path = f"checkpoints/{cfg}_summary.json"
         if os.path.exists(path):
             with open(path) as f:
                 s = json.load(f)
             delta = s["best_val_bpc"] - mol_bpc
-            print(f"  {cfg:<22} {s['best_val_bpc']:.4f}  ({delta:+.4f})")
+            print(f"  {cfg:<26} {s['best_val_bpc']:.4f}  ({delta:+.4f})")
 EOF
