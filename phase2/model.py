@@ -554,7 +554,7 @@ class HDCModel(nn.Module):
             missing      = (inner_keys - _rope_keys) - set(inner_state.keys())
             if missing:
                 raise ValueError(f"mol_ckpt missing keys for InnerTransformer: {missing}")
-            self.inner.load_state_dict(inner_state)
+            self.inner.load_state_dict(inner_state, strict=False)
             self.inner.requires_grad_(False)
             print(f"  Inner transformer loaded from {mol_ckpt} and frozen.")
 
