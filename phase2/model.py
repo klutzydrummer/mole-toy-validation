@@ -547,8 +547,11 @@ class HDCModel(nn.Module):
             # ToyTransformer keys: embed.*, blocks.*, norm_out.*, lm_head.*
             # InnerTransformer keys: blocks.*, norm_out.*  — filter directly
             inner_keys   = set(self.inner.state_dict().keys())
-            inner_state  = {k: v for k, v in mol_state.items() if k in inner_keys}
-            missing      = inner_keys - set(inner_state.keys())
+            # rope_cos / rope_sin are precomputed positional buffers, not learned —
+            # exclude them so the model re-initialises them at the correct inner seq_len.
+            _rope_keys   = {k for k in inner_keys if k.endswith(("rope_cos", "rope_sin"))}
+            inner_state  = {k: v for k, v in mol_state.items() if k in inner_keys and k not in _rope_keys}
+            missing      = (inner_keys - _rope_keys) - set(inner_state.keys())
             if missing:
                 raise ValueError(f"mol_ckpt missing keys for InnerTransformer: {missing}")
             self.inner.load_state_dict(inner_state)
