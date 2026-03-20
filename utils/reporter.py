@@ -793,6 +793,126 @@ def run_once():
     os.replace(tmp, REPORT_PATH)
     print(f"Report written to {REPORT_PATH}")
 
+    render_agent_report(analyses)
+    print(f"Agent report written to {AGENT_REPORT_PATH}")
+
+
+AGENT_REPORT_PATH = os.path.join(CKPT_DIR, "report_agent.json")
+
+def render_agent_report(analyses):
+    """
+    Compact JSON report for Claude Code consumption.
+    No prose, no charts — only structured signals needed for analysis.
+    """
+    now = datetime.utcnow().strftime("%Y-%m-%dT%H:%MZ")
+
+    # Reference BPCs for delta calculations
+    ref = {}
+    for cfg in ("baseline", "mol"):
+        a = next((x for x in analyses if x["config"] == cfg), None)
+        if a and a["best_val_bpc"] is not None:
+            ref[cfg] = round(a["best_val_bpc"], 4)
+
+    configs_out = []
+    for a in analyses:
+        flags = []
+        if a["gnorm_rising"]:
+            flags.append("grad_norm_rising")
+        if a["is_decelerating"]:
+            flags.append("improvement_decelerating")
+        if a["spikes"]:
+            flags.append(f"loss_spikes:{len(a['spikes'])}")
+        h = a.get("hdc_health", {})
+        if h:
+            target = h.get("target_ratio", 0.25)
+            ratio  = h.get("compression_ratio", target)
+            if abs(ratio - target) > 0.3 * target:
+                flags.append(f"compression_unstable:{ratio:.3f}_vs_{target:.3f}")
+        p = a.get("pos_health", {})
+        if p and p.get("boundary_bpc") and p.get("midchunk_bpc"):
+            if p["midchunk_bpc"] - p["boundary_bpc"] > 0.15:
+                flags.append("u_shaped_loss")
+
+        entry = {
+            "config":        a["config"],
+            "phase":         a["phase"],
+            "type":          "upcycle" if a["config"] in _UPCYCLE_CONFIGS else ("hdc" if a["phase"] == 2 else "dense"),
+            "status":        "complete" if a["summary"] else ("running" if a["current_step"] > 0 else "pending"),
+            "progress":      round(a["progress_pct"] / 100, 3),
+            "step":          a["current_step"],
+            "total_steps":   _TOTAL_STEPS.get(a["config"], TOTAL_STEPS),
+            "best_val_bpc":  round(a["best_val_bpc"], 4) if a["best_val_bpc"] else None,
+            "train_bpc":     round(a["current_bpc"], 4) if a["current_bpc"] else None,
+            "grad_norm":     round(a["recent_gnorm"], 3) if a["recent_gnorm"] else None,
+            "convergence":   a["status"],
+            "bpc_rate_per_1k": round(a["bpc_rate"], 5) if a["bpc_rate"] is not None else None,
+            "n_params":      a["summary"]["n_params"] if a["summary"] else None,
+            "elapsed_min":   round(a["summary"]["elapsed_seconds"] / 60, 1) if a["summary"] else None,
+            "flags":         flags,
+        }
+
+        # Deltas vs reference configs
+        if a["best_val_bpc"] is not None:
+            if "baseline" in ref:
+                entry["vs_baseline"] = round(a["best_val_bpc"] - ref["baseline"], 4)
+            if "mol" in ref and a["phase"] == 2:
+                entry["vs_mol"] = round(a["best_val_bpc"] - ref["mol"], 4)
+
+        # HDC-specific signals
+        if h:
+            entry["hdc"] = {
+                "compression_ratio": round(h.get("compression_ratio", 0), 3),
+                "target_ratio":      round(h.get("target_ratio", 0.25), 3),
+                "ratio_std":         round(h.get("ratio_std", 0), 4),
+                "boundary_entropy":  round(h.get("boundary_entropy", 0), 3),
+            }
+
+        # Eval curve (step, val_bpc) — full precision, all evals
+        if a["eval_bpcs"]:
+            entry["eval_curve"] = [[s, round(b, 4)] for s, b in a["eval_bpcs"]]
+
+        # Sampled train curve (step, bpc) — 10 points
+        if a["train_curve"]:
+            tc = a["train_curve"]
+            stride = max(1, len(tc) // 10)
+            entry["train_curve_sampled"] = [[s, round(b, 4)] for s, b in tc[::stride]]
+
+        configs_out.append(entry)
+
+    # Cross-config rankings (completed only)
+    complete = [c for c in configs_out if c["status"] == "complete" and c["best_val_bpc"] is not None]
+    rankings = [{"rank": i+1, "config": c["config"], "best_val_bpc": c["best_val_bpc"]}
+                for i, c in enumerate(sorted(complete, key=lambda x: x["best_val_bpc"]))]
+
+    # All active flags aggregated
+    all_flags = [{"config": c["config"], "flags": c["flags"]}
+                 for c in configs_out if c["flags"]]
+
+    report = {
+        "generated_utc": now,
+        "reference_bpcs": ref,
+        "summary": {
+            "phase1": {
+                "complete": sum(1 for c in configs_out if c["phase"] == 1 and c["status"] == "complete"),
+                "running":  sum(1 for c in configs_out if c["phase"] == 1 and c["status"] == "running"),
+                "pending":  sum(1 for c in configs_out if c["phase"] == 1 and c["status"] == "pending"),
+            },
+            "phase2": {
+                "complete": sum(1 for c in configs_out if c["phase"] == 2 and c["status"] == "complete"),
+                "running":  sum(1 for c in configs_out if c["phase"] == 2 and c["status"] == "running"),
+                "pending":  sum(1 for c in configs_out if c["phase"] == 2 and c["status"] == "pending"),
+            },
+        },
+        "rankings": rankings,
+        "alerts": all_flags,
+        "configs": configs_out,
+    }
+
+    tmp = AGENT_REPORT_PATH + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(report, f, separators=(",", ":"))
+    os.replace(tmp, AGENT_REPORT_PATH)
+
 
 def main():
     parser = argparse.ArgumentParser(description="Training reporter")
