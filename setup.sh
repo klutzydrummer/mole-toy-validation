@@ -6,7 +6,7 @@ python -c "import torch; print(f'PyTorch {torch.__version__}')" 2>/dev/null || {
     echo "Installing PyTorch..."
     pip install torch --quiet
 }
-pip install numpy matplotlib tqdm sentencepiece --quiet
+pip install numpy matplotlib tqdm sentencepiece datasets --quiet
 
 echo ""
 echo "=== Preparing WikiText-103 BPE splits ==="

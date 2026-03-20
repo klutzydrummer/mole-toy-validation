@@ -21,7 +21,6 @@ from torch.utils.data import Dataset, DataLoader
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
 ENWIK8_PATH = os.path.join(DATA_DIR, "enwik8")
 WIKITEXT103_DIR = os.path.join(DATA_DIR, "wikitext-103-raw")
-WIKITEXT103_URL = "https://s3.amazonaws.com/research.metamind.io/wikitext/wikitext-103-raw-v1.zip"
 
 _DATASET   = "wikitext103"
 _TOKENIZER = "bpe"
@@ -64,37 +63,31 @@ def _ensure_spm():
 
 # ── WikiText-103 ──────────────────────────────────────────────────────────────
 
-def _prepare_wikitext103():
-    """Download WikiText-103-raw, train BPE tokenizer, tokenize all splits."""
-    import zipfile
+def _ensure_hf_datasets():
+    try:
+        from datasets import load_dataset
+        return load_dataset
+    except ImportError:
+        import subprocess
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "datasets", "--quiet"])
+        from datasets import load_dataset
+        return load_dataset
 
-    # Download + unzip
-    if not os.path.isdir(WIKITEXT103_DIR):
-        os.makedirs(DATA_DIR, exist_ok=True)
-        zip_path = os.path.join(DATA_DIR, "wikitext-103-raw-v1.zip")
-        print("Downloading WikiText-103-raw (~180MB)...")
-        try:
-            import urllib.request
-            urllib.request.urlretrieve(WIKITEXT103_URL, zip_path)
-        except Exception as e:
-            print(f"urllib failed ({e}), trying wget...")
-            import subprocess
-            subprocess.check_call(["wget", "-q", WIKITEXT103_URL, "-O", zip_path])
-        print("  Extracting...")
-        with zipfile.ZipFile(zip_path) as zf:
-            zf.extractall(DATA_DIR)
-        os.remove(zip_path)
-        print(f"  Extracted to {WIKITEXT103_DIR}")
+
+def _prepare_wikitext103():
+    """Download WikiText-103-raw via HuggingFace datasets, train BPE, tokenize splits."""
+    os.makedirs(DATA_DIR, exist_ok=True)
+
+    print("Downloading WikiText-103-raw via Hugging Face datasets...")
+    load_dataset = _ensure_hf_datasets()
+    ds = load_dataset("wikitext", "wikitext-103-raw-v1")
 
     spm = _ensure_spm()
-
     model_path = os.path.join(DATA_DIR, "wikitext103_spm.model")
     if not os.path.exists(model_path):
-        print("Training sentencepiece BPE tokenizer on WikiText-103 (vocab=4096)...")
-        train_file = os.path.join(WIKITEXT103_DIR, "wiki.train.raw")
+        print("Training sentencepiece BPE tokenizer (vocab=4096)...")
+        sample = "\n".join(ds["train"]["text"])[:20_000_000]
         sample_path = os.path.join(DATA_DIR, "_wt103_spm_sample.txt")
-        with open(train_file, "r", encoding="utf-8") as f:
-            sample = f.read(20_000_000)
         with open(sample_path, "w", encoding="utf-8") as f:
             f.write(sample)
         spm.SentencePieceTrainer.train(
@@ -111,21 +104,14 @@ def _prepare_wikitext103():
     sp = spm.SentencePieceProcessor()
     sp.load(model_path)
 
-    split_files = [
-        ("train", os.path.join(WIKITEXT103_DIR, "wiki.train.raw")),
-        ("val",   os.path.join(WIKITEXT103_DIR, "wiki.valid.raw")),
-        ("test",  os.path.join(WIKITEXT103_DIR, "wiki.test.raw")),
-    ]
-    for name, src in split_files:
+    for name, hf_split in [("train", "train"), ("val", "validation"), ("test", "test")]:
         out = os.path.join(DATA_DIR, f"wikitext103_bpe_{name}.npy")
         if not os.path.exists(out):
             print(f"  Tokenizing {name} split...")
-            with open(src, "r", encoding="utf-8") as f:
-                text = f.read()
+            text = "\n".join(ds[hf_split]["text"])
             ids = sp.encode(text, out_type=int)
-            arr = np.array(ids, dtype=np.int32)
-            np.save(out, arr)
-            print(f"    {len(arr):,} tokens -> {out}")
+            np.save(out, np.array(ids, dtype=np.int32))
+            print(f"    {len(ids):,} tokens -> {out}")
         else:
             print(f"  {out} already exists, skipping.")
     print("WikiText-103 BPE splits saved.")
