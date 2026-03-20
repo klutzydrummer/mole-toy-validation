@@ -26,10 +26,10 @@ PHASE2_CONFIGS  = [
 CONFIGS = PHASE1_CONFIGS + PHASE2_CONFIGS
 
 # Total training steps per config
-_TOTAL_STEPS = {c: 50000 for c in PHASE1_CONFIGS + PHASE2_CONFIGS}
-_TOTAL_STEPS["hdc_upcycle_stride"] = 25000
-_TOTAL_STEPS["hdc_upcycle_gate"]   = 25000
-TOTAL_STEPS = 50000  # kept for backwards compat
+_TOTAL_STEPS = {c: 100000 for c in PHASE1_CONFIGS + PHASE2_CONFIGS}
+_TOTAL_STEPS["hdc_upcycle_stride"] = 50000
+_TOTAL_STEPS["hdc_upcycle_gate"]   = 50000
+TOTAL_STEPS = 100000  # kept for backwards compat
 
 # Configs that use a frozen mol inner (upcycle)
 _UPCYCLE_CONFIGS = {"hdc_upcycle_stride", "hdc_upcycle_gate"}

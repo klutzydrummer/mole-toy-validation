@@ -87,7 +87,7 @@ run_phase1() {
         --d            512 \
         --n_heads      8 \
         --mol_rank     8 \
-        --total_steps  50000 \
+        --total_steps  100000 \
         --batch_size   32 \
         --seq_len      256 \
         --eval_interval 2500 \
@@ -127,7 +127,7 @@ run_phase2() {
         --d            512 \
         --n_heads      8 \
         --mol_rank     8 \
-        --total_steps  "$steps" \
+        --total_steps  "${steps}" \
         --batch_size   32 \
         --seq_len      256 \
         --eval_interval 2500 \
@@ -153,8 +153,8 @@ case "$TARGET" in
     run_phase2 hdc_r2
     run_phase2 hdc_r8
     run_phase2 hdc_e2e_isolated
-    run_phase2 hdc_upcycle_stride 25000 "checkpoints/mol_best.pt"
-    run_phase2 hdc_upcycle_gate   25000 "checkpoints/mol_best.pt"
+    run_phase2 hdc_upcycle_stride 50000 "checkpoints/mol_best.pt"
+    run_phase2 hdc_upcycle_gate   50000 "checkpoints/mol_best.pt"
     ;;
 
   phase1)
@@ -172,8 +172,8 @@ case "$TARGET" in
     run_phase2 hdc_r2
     run_phase2 hdc_r8
     run_phase2 hdc_e2e_isolated
-    run_phase2 hdc_upcycle_stride 25000 "checkpoints/mol_best.pt"
-    run_phase2 hdc_upcycle_gate   25000 "checkpoints/mol_best.pt"
+    run_phase2 hdc_upcycle_stride 50000 "checkpoints/mol_best.pt"
+    run_phase2 hdc_upcycle_gate   50000 "checkpoints/mol_best.pt"
     ;;
 
   # Individual Phase 1 configs
@@ -195,10 +195,10 @@ case "$TARGET" in
 
   # Individual upcycle configs (25k steps, requires mol_best.pt)
   hdc_upcycle_stride)
-    run_phase2 hdc_upcycle_stride 25000 "checkpoints/mol_best.pt"
+    run_phase2 hdc_upcycle_stride 50000 "checkpoints/mol_best.pt"
     ;;
   hdc_upcycle_gate)
-    run_phase2 hdc_upcycle_gate 25000 "checkpoints/mol_best.pt"
+    run_phase2 hdc_upcycle_gate 50000 "checkpoints/mol_best.pt"
     ;;
 
   *)

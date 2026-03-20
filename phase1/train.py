@@ -69,7 +69,7 @@ def evaluate(model, val_loader, device, max_batches=50):
 
 
 def train(config: str, d: int = 512, n_layers: int = 8, n_heads: int = 8,
-          seq_len: int = 256, batch_size: int = 32, total_steps: int = 50000,
+          seq_len: int = 256, batch_size: int = 32, total_steps: int = 100000,
           eval_interval: int = 2500, log_interval: int = 100,
           max_lr: float = 3e-4, ckpt_dir: str = "checkpoints",
           mhc_dynamic: bool = False, n_experts: int = 8,
@@ -282,7 +282,7 @@ if __name__ == "__main__":
     parser.add_argument("--tokenizer", type=str, default="bpe", choices=["char", "bpe"])
     parser.add_argument("--dataset",   type=str, default="wikitext103", choices=["wikitext103", "enwik8"])
     parser.add_argument("--batch_size", type=int, default=32)
-    parser.add_argument("--total_steps", type=int, default=50000)
+    parser.add_argument("--total_steps", type=int, default=100000)
     parser.add_argument("--eval_interval", type=int, default=2500)
     parser.add_argument("--log_interval", type=int, default=100)
     parser.add_argument("--max_lr", type=float, default=3e-4)
