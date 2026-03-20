@@ -9,23 +9,8 @@ python -c "import torch; print(f'PyTorch {torch.__version__}')" 2>/dev/null || {
 pip install numpy matplotlib tqdm sentencepiece --quiet
 
 echo ""
-echo "=== Downloading enwik8 ==="
-mkdir -p data
-if [ ! -f data/enwik8 ]; then
-    wget -q http://mattmahoney.net/dc/enwik8.zip -O data/enwik8.zip
-    cd data && unzip -o enwik8.zip && rm enwik8.zip && cd ..
-    echo "Downloaded: $(wc -c < data/enwik8) bytes"
-else
-    echo "Already exists: $(wc -c < data/enwik8) bytes"
-fi
-
-echo ""
-echo "=== Preparing character splits ==="
-python utils/data.py --prepare-char
-
-echo ""
-echo "=== Training BPE tokeniser and preparing BPE splits ==="
-python utils/data.py --prepare-bpe
+echo "=== Preparing WikiText-103 BPE splits ==="
+python utils/data.py --prepare-wikitext103
 
 echo ""
 python -c "
@@ -39,5 +24,5 @@ print(f'SDPA: {hasattr(torch.nn.functional, \"scaled_dot_product_attention\")}')
 
 echo ""
 echo "=== Ready ==="
-echo "  Train (BPE):  python phase1/train.py --config baseline"
-echo "  Resume:       python phase1/train.py --config baseline --resume"
+echo "  Train:   bash run_experiments.sh"
+echo "  Resume:  python phase1/train.py --config baseline --resume"

@@ -23,7 +23,7 @@ import torch.nn.functional as F
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from phase1.model import ToyTransformer
-from utils.data import get_dataloader, set_tokenizer, get_vocab_size
+from utils.data import get_dataloader, set_dataset, set_tokenizer, get_vocab_size
 from utils.metrics import ce_to_bpc, TrainLogger, ParamCounter
 
 # LightningLogger is only available inside Lightning.ai Studios — degrade gracefully elsewhere.
@@ -75,13 +75,14 @@ def train(config: str, d: int = 512, n_layers: int = 8, n_heads: int = 8,
           mhc_dynamic: bool = False, n_experts: int = 8,
           mol_rank: int = 8, mol_top_k: int = 2,
           resume: bool = False, no_compile: bool = False,
-          tokenizer: str = "bpe",
+          tokenizer: str = "bpe", dataset: str = "wikitext103",
           teamspace: str = "mole-toy-validation-project"):
 
     print(f"\n{'='*60}")
     print(f"Phase 1 Training: config={config}")
     print(f"{'='*60}\n")
 
+    set_dataset(dataset)
     set_tokenizer(tokenizer)
     vocab_size = get_vocab_size()
 
@@ -258,7 +259,7 @@ def train(config: str, d: int = 512, n_layers: int = 8, n_heads: int = 8,
         "best_val_bpc": best_val_bpc, "elapsed_seconds": elapsed,
         "d": d, "n_layers": n_layers, "n_heads": n_heads,
         "seq_len": seq_len, "batch_size": batch_size,
-        "tokenizer": tokenizer, "vocab_size": vocab_size,
+        "tokenizer": tokenizer, "dataset": dataset, "vocab_size": vocab_size,
     }
     with open(os.path.join(ckpt_dir, f"{config}_summary.json"), "w") as f:
         json.dump(summary, f, indent=2)
@@ -279,6 +280,7 @@ if __name__ == "__main__":
     parser.add_argument("--n_heads", type=int, default=8)
     parser.add_argument("--seq_len", type=int, default=256)
     parser.add_argument("--tokenizer", type=str, default="bpe", choices=["char", "bpe"])
+    parser.add_argument("--dataset",   type=str, default="wikitext103", choices=["wikitext103", "enwik8"])
     parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--total_steps", type=int, default=50000)
     parser.add_argument("--eval_interval", type=int, default=2500)

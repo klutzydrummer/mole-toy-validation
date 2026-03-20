@@ -32,8 +32,8 @@ for arg in "$@"; do
 done
 
 # ── Sanity checks ──────────────────────────────────────────────────────────────
-if [ ! -f "data/enwik8_bpe_train.npy" ] || [ ! -f "data/enwik8_bpe_val.npy" ]; then
-    echo "ERROR: BPE data splits not found."
+if [ ! -f "data/wikitext103_bpe_train.npy" ] || [ ! -f "data/wikitext103_bpe_val.npy" ]; then
+    echo "ERROR: WikiText-103 BPE splits not found."
     echo "       Run: bash setup.sh"
     exit 1
 fi

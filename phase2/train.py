@@ -34,7 +34,7 @@ import torch.nn.functional as F
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from phase2.model import HDCModel
-from utils.data import get_dataloader, set_tokenizer, get_vocab_size
+from utils.data import get_dataloader, set_dataset, set_tokenizer, get_vocab_size
 from utils.metrics import ce_to_bpc, TrainLogger, ParamCounter
 
 try:
@@ -184,11 +184,13 @@ def train(
     ckpt_dir:       str   = "checkpoints",
     teamspace:      str   = "mole-toy-validation-project",
     tokenizer:      str   = "bpe",
+    dataset:        str   = "wikitext103",
 ):
     print(f"\n{'='*60}")
     print(f"Phase 2 Training: config={config}")
     print(f"{'='*60}\n")
 
+    set_dataset(dataset)
     set_tokenizer(tokenizer)
     vocab_size = get_vocab_size()
 
@@ -408,7 +410,7 @@ def train(
         "d": d, "n_layers": n_layers, "n_heads": n_heads,
         "seq_len": seq_len, "batch_size": batch_size,
         "R": _unwrap(model).R, "lambda_comp": effective_lambda,
-        "tokenizer": tokenizer, "vocab_size": vocab_size,
+        "tokenizer": tokenizer, "dataset": dataset, "vocab_size": vocab_size,
     }
     with open(os.path.join(ckpt_dir, f"{config}_summary.json"), "w") as f:
         json.dump(summary, f, indent=2)
@@ -429,6 +431,7 @@ if __name__ == "__main__":
     parser.add_argument("--n_heads",        type=int,   default=8)
     parser.add_argument("--seq_len",        type=int,   default=256)
     parser.add_argument("--tokenizer",      type=str,   default="bpe", choices=["char", "bpe"])
+    parser.add_argument("--dataset",        type=str,   default="wikitext103", choices=["wikitext103", "enwik8"])
     parser.add_argument("--batch_size",     type=int,   default=32)
     parser.add_argument("--total_steps",    type=int,   default=50000)
     parser.add_argument("--eval_interval",  type=int,   default=2500)
