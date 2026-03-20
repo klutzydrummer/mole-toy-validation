@@ -75,45 +75,76 @@ def _ensure_hf_datasets():
 
 
 def _prepare_wikitext103():
-    """Download WikiText-103-raw via HuggingFace datasets, train BPE, tokenize splits."""
-    os.makedirs(DATA_DIR, exist_ok=True)
+    """Download WikiText-103-raw via HuggingFace datasets, train BPE, tokenize splits.
 
-    print("Downloading WikiText-103-raw via Hugging Face datasets...")
+    Uses datasets.map() for Arrow-backed batch tokenization and .iter() for
+    memory-efficient flattening — never materializes the full corpus in Python RAM.
+    """
+    os.makedirs(DATA_DIR, exist_ok=True)
     load_dataset = _ensure_hf_datasets()
+    spm_lib = _ensure_spm()
+
+    print("Loading WikiText-103-raw via Hugging Face datasets...")
     ds = load_dataset("wikitext", "wikitext-103-raw-v1")
 
-    spm = _ensure_spm()
+    # ── Train tokenizer ───────────────────────────────────────────────────────
     model_path = os.path.join(DATA_DIR, "wikitext103_spm.model")
     if not os.path.exists(model_path):
         print("Training sentencepiece BPE tokenizer (vocab=4096)...")
-        sample = "\n".join(ds["train"]["text"])[:20_000_000]
+        # Iterate rows directly — avoids joining the full ~500MB split into RAM
         sample_path = os.path.join(DATA_DIR, "_wt103_spm_sample.txt")
+        total_chars = 0
         with open(sample_path, "w", encoding="utf-8") as f:
-            f.write(sample)
-        spm.SentencePieceTrainer.train(
+            for row in ds["train"]:
+                text = row["text"]
+                if text.strip():
+                    f.write(text + "\n")
+                    total_chars += len(text)
+                    if total_chars >= 20_000_000:
+                        break
+        spm_lib.SentencePieceTrainer.train(
             input=sample_path,
             model_prefix=os.path.join(DATA_DIR, "wikitext103_spm"),
-            vocab_size=4096,
-            model_type="bpe",
-            character_coverage=1.0,
+            vocab_size=4096, model_type="bpe", character_coverage=1.0,
             pad_id=0, unk_id=1, bos_id=2, eos_id=3,
         )
         os.remove(sample_path)
         print(f"  Tokenizer saved to {model_path}")
 
-    sp = spm.SentencePieceProcessor()
+    sp = spm_lib.SentencePieceProcessor()
     sp.load(model_path)
 
+    # ── Tokenize splits ───────────────────────────────────────────────────────
     for name, hf_split in [("train", "train"), ("val", "validation"), ("test", "test")]:
         out = os.path.join(DATA_DIR, f"wikitext103_bpe_{name}.npy")
-        if not os.path.exists(out):
-            print(f"  Tokenizing {name} split...")
-            text = "\n".join(ds[hf_split]["text"])
-            ids = sp.encode(text, out_type=int)
-            np.save(out, np.array(ids, dtype=np.int32))
-            print(f"    {len(ids):,} tokens -> {out}")
-        else:
+        if os.path.exists(out):
             print(f"  {out} already exists, skipping.")
+            continue
+
+        print(f"  Tokenizing {name} split...")
+
+        # .map() runs in Arrow-backed batches, caches to disk — no full corpus in RAM
+        def tokenize_fn(batch):
+            return {"ids": [sp.encode(t, out_type=int) if t.strip() else []
+                            for t in batch["text"]]}
+
+        tokenized = ds[hf_split].map(
+            tokenize_fn, batched=True, batch_size=1000,
+            remove_columns=["text"], desc=f"Tokenizing {name}",
+        )
+
+        # .iter() reads Arrow-backed chunks — flatten to int32 numpy without
+        # ever holding the full token sequence as Python objects in RAM
+        chunks = []
+        for batch in tokenized.iter(batch_size=10000):
+            for doc_ids in batch["ids"]:
+                if doc_ids:
+                    chunks.append(np.array(doc_ids, dtype=np.int32))
+
+        arr = np.concatenate(chunks)
+        np.save(out, arr)
+        print(f"    {len(arr):,} tokens -> {out}")
+
     print("WikiText-103 BPE splits saved.")
 
 
