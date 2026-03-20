@@ -52,7 +52,7 @@ mkdir -p checkpoints
 bash utils/kill_reporter.sh
 
 REPORTER_PIDFILE="checkpoints/.reporter.pid"
-python utils/reporter.py --watch --interval 30 &
+python utils/reporter.py --watch --interval 30 --parent-pid $$ &
 REPORTER_PID=$!
 echo "$REPORTER_PID" > "$REPORTER_PIDFILE"
 

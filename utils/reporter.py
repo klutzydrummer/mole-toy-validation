@@ -920,14 +920,25 @@ def main():
                         help="Poll continuously until killed (Ctrl+C)")
     parser.add_argument("--interval", type=int, default=30,
                         help="Poll interval in seconds (default: 30)")
+    parser.add_argument("--parent-pid", type=int, default=None,
+                        help="Exit when this PID is no longer running")
     args = parser.parse_args()
 
     if args.watch:
-        print(f"Watching checkpoints/ — updating report every {args.interval}s. Ctrl+C to stop.")
+        parent = args.parent_pid
+        print(f"Watching checkpoints/ — updating report every {args.interval}s. Ctrl+C to stop."
+              + (f" (watching PID {parent})" if parent else ""))
         try:
             while True:
                 run_once()
                 time.sleep(args.interval)
+                if parent:
+                    try:
+                        os.kill(parent, 0)
+                    except ProcessLookupError:
+                        print(f"\nParent process {parent} exited — reporter shutting down.")
+                        run_once()
+                        break
         except KeyboardInterrupt:
             print("\nReporter stopped.")
             run_once()
