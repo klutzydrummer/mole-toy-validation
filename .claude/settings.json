@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "echo '## Post-Compaction Context Reload\n\nPhase 1 best: mol = 1.3357 BPC (100k steps, WikiText-103-raw)\nPhase 2 target: hdc_gate BPC < 1.3357\n\nStudy design: STUDY_DESIGN.md (Q1: mol vs baseline_wide, Q2: mol vs mol_single)\nTraining config: TRAINING_METHODOLOGY.md (bfloat16, C-AdamW, scaled init)\n\nBefore any model change: python utils/verify.py check\nCheck training status: python utils/reporter.py\nVerification workflow: .claude/rules/run-full-verification.md'"
+            "command": "echo '## Post-Compaction Context\n\nIMPORTANT: Training runs on a REMOTE environment. This repo has NO live\naccess to training output. The user manually downloads reports and provides\nthem. Do NOT attempt to run training commands or read live metrics locally.\n\nRead STUDY_DESIGN.md and TRAINING_METHODOLOGY.md for current experiment plan.\nBefore any model change: python utils/verify.py check\nVerification workflow: .claude/rules/run-full-verification.md'"
           }
         ]
       }
