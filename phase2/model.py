@@ -393,7 +393,7 @@ class ZoneD(nn.Module):
          h_j = (1 - p_j) * sigmoid(W_gate · encoder_out_j) * encoder_out_j + plugback_j
          Non-boundary tokens (low p_j) lean more on Zone E's encoder_out,
          preserving fine-grained local information not seen by inner network.
-         This mitigates the U-shaped loss (DLCM Section 4.2).
+         This mitigates the U-shaped loss (DLCM Section 7.2.2).
 
     4. Decoder recurrence:
          Linear d→d/4 → 3× CausalRecurrenceLayer(d/4) → Linear d/4→d → RMSNorm

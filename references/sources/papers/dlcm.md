@@ -238,6 +238,30 @@ L(N, D, R, P) = E₀ + A_token / (N(1−P) + t_token)^δ₁
 
 ---
 
+## Section 7.2.2 — Loss Distribution Analysis (U-Shaped Loss)
+
+Section 7.2.2 ("Loss Distribution Analysis") presents Figure 7, which shows a distinct
+**U-shaped improvement pattern** across relative positions within concepts when comparing
+DLCM against a token-level baseline:
+
+- **Boundary positions** (start/end of concept): DLCM shows clear improvement — the model
+  learns to allocate more capacity at semantic boundaries.
+- **Mid-concept positions** (~positions 4–15): performance is mixed; some degradation observed.
+  "The presence of red bars in certain mid-concept regions suggests that the compression
+  mechanism forces the model to trade off some fine-grained token-level precision."
+- **Explanation**: "The concept model sacrifices uniform token-level predictability (resulting
+  in minor degradation at specific internal positions) to gain superior performance at semantic
+  boundaries and structurally critical tokens."
+
+This U-shaped pattern is the empirical motivation for Zone D's gated residual design in our
+implementation: the `(1 - p_j)` weighting gives non-boundary tokens a stronger skip connection
+through `encoder_out`, compensating for the mid-chunk precision loss.
+
+**Note on section citation**: This analysis is in Section 7.2 / 7.2.2, NOT Section 4.2.
+Prior citations of "DLCM Section 4.2" in this codebase were incorrect and have been fixed.
+
+---
+
 ## Key Design Quotes
 
 - "We detect these 'semantic breaks' by measuring local dissimilarity between adjacent tokens."

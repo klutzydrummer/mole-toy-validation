@@ -190,7 +190,7 @@ The MoL FFN in MoLE follows DeepSeek-V3 routing semantics:
 - Use **unbiased scores** for weight composition (bias only affects selection)
 - Router weights: standard linear layer (`nn.Linear(d_model, n_experts)`, no special init mentioned in paper)
 
-See `/home/brandon/Projects/MoLE/reference/deepseek_v3_mla_moe.py` for a cleaned reference implementation.
+See `references/sources/code/deepseek_v3_moe.py` for a cleaned reference implementation.
 
 ---
 
