@@ -91,11 +91,20 @@ class CausalRecurrenceLayer(nn.Module):
     The sqrt(1 - a_t²) term is NOT optional — it maintains E[||h||²] bounded.
     Without it, hidden state norm grows unboundedly at small d.
 
-    log_a initialized to 7.5 so that sigmoid(7.5)^8 ≈ 0.9953 (long initial memory).
-    This matches Griffin's intent: decay starts near 1, learns to compress over training.
+    log_a_init controls the initial memory length:
+      log_a_init=7.5  sigmoid(7.5)^8 ≈ 0.995, half-life ~289 steps  (too long — gradient
+                      through log_a ∝ (1-sigmoid(7.5)) ≈ 0.0006, essentially frozen)
+      log_a_init=3.0  sigmoid(3.0)^8 ≈ 0.68,  half-life ~4 steps    (Zone E default)
+      log_a_init=0.0  sigmoid(0.0)^8 = 0.004,  half-life <1 step     (Zone D default)
+
+    Zone E uses log_a_init=3.0: encoder captures ~4-token local context, enough contrast
+    for boundary detection, gradient (1-sigmoid(3.0)) ≈ 0.047 allows adaptation.
+
+    Zone D uses log_a_init=0.0: near-memoryless decoder focuses on local reconstruction,
+    gradient (1-sigmoid(0.0)) = 0.5 gives strong adaptation signal.
     """
 
-    def __init__(self, d: int):
+    def __init__(self, d: int, log_a_init: float = 7.5):
         super().__init__()
         self.d = d
 
@@ -108,8 +117,8 @@ class CausalRecurrenceLayer(nn.Module):
         self.W_r = nn.Linear(d, d, bias=True)   # recurrence gate: controls decay strength
         self.W_i = nn.Linear(d, d, bias=True)   # input gate: controls write strength
 
-        # Per-channel log decay. sigmoid(7.5) ≈ 0.9994, ^8 ≈ 0.9953 (long initial memory)
-        self.log_a = nn.Parameter(torch.full((d,), 7.5))
+        # Per-channel log decay — see docstring for init value rationale.
+        self.log_a = nn.Parameter(torch.full((d,), log_a_init))
 
         # Output
         self.out_proj = nn.Linear(d, d, bias=False)
@@ -131,11 +140,9 @@ class CausalRecurrenceLayer(nn.Module):
         i_t = torch.sigmoid(self.W_i(x_conv))                 # [B, L, d] in (0, 1)
 
         # Per-channel base decay raised to 8*r_t (input-dependent).
-        # IMPORTANT: compute sigmoid(log_a) in float32 before casting back to
-        # the working dtype. Under AMP float16, sigmoid(7.5) ≈ 0.9994 rounds UP
-        # to exactly 1.0 (the largest float16 < 1.0 is 0.9990). a_t = 1.0 then
-        # makes 1 - a_t² = 0, b_t = 0, the entire recurrence output is zero, and
-        # F.normalize(zeros) = NaN in ZoneE. Float32 gives sigmoid(7.5) = 0.9994.
+        # Compute sigmoid(log_a) in float32 before casting back to working dtype.
+        # float16 max < 1.0 is 0.99951; for large log_a values this is a safe
+        # practice to preserve precision in the decay computation.
         a_base = torch.sigmoid(self.log_a.float()).to(x.dtype)  # [d] float32 → dtype
         a_t    = a_base.pow(8.0 * r_t)                          # [B, L, d] in (~0.9, 1)
 
@@ -278,7 +285,8 @@ class ZoneE(nn.Module):
         super().__init__()
         self.d = d
         self.down_proj  = nn.Linear(d, d_outer, bias=False)
-        self.recurrence = nn.ModuleList([CausalRecurrenceLayer(d_outer) for _ in range(3)])
+        # log_a_init=3.0: half-life ~4 steps, gradient (1-sigmoid(3))≈0.047 — trainable
+        self.recurrence = nn.ModuleList([CausalRecurrenceLayer(d_outer, log_a_init=3.0) for _ in range(3)])
         self.up_proj    = nn.Linear(d_outer, d, bias=False)
         self.router     = BoundaryRouter(d=d, R=R, routing=routing)
 
@@ -395,7 +403,8 @@ class ZoneD(nn.Module):
         super().__init__()
         self.gate_proj  = nn.Linear(d, d, bias=True)
         self.down_proj  = nn.Linear(d, d_outer, bias=False)
-        self.recurrence = nn.ModuleList([CausalRecurrenceLayer(d_outer) for _ in range(3)])
+        # log_a_init=0.0: near-memoryless decoder, gradient (1-sigmoid(0))=0.5 — strong adaptation
+        self.recurrence = nn.ModuleList([CausalRecurrenceLayer(d_outer, log_a_init=0.0) for _ in range(3)])
         self.up_proj    = nn.Linear(d_outer, d, bias=False)
         self.norm_out   = RMSNorm(d)
         self.register_buffer("_arange", torch.arange(seq_len), persistent=False)

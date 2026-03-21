@@ -49,10 +49,10 @@ python utils/reporter.py                              # regenerate checkpoints/r
 
 Workflow when you change model code:
 1. Change model code locally
-2. Ask Claude Code: "run full verification" — agents cross-check code vs `references/components/`
-3. Review the report in `references/verification/reports/`
+2. Ask Claude Code: **"run full verification"** — triggers the Phase B' agent pipeline (`.claude/rules/run-full-verification.md`): agents cross-check every equation and code snippet in `references/components/` against the primary sources in `references/sources/`, and verify the implementation at cited line numbers. Reports written to `references/verification/reports/`.
+3. Review reports — any FAIL verdict must be fixed before proceeding
 4. `python utils/verify.py update --result pass --report <path>`
-5. `git commit` (including updated `references/verification/last_verified.json`)
+5. `git commit` (including updated `references/verification/last_verified.json` and reports)
 6. Cloud: `run_experiments.sh` enforces both gates — smoke test + hash check
 
 ---

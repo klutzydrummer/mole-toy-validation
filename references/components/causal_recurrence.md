@@ -141,12 +141,25 @@ class SqrtBoundDerivative(torch.autograd.Function):
    making it compilable by `torch.compile` into a single fused kernel graph. The derivation
    is in the docstring at `phase2/model.py:47–67`.
 
-2. **log_a parameterization instead of softplus(a_param).** The reference stores `a_param`
-   and computes decay as `exp(-8 * gate_a * softplus(a_param))`. Our implementation stores
-   `log_a` (initialized to 7.5) and computes `a_base = sigmoid(log_a)`, then
-   `a_t = a_base^(8 * r_t)`. Both are equivalent: `sigmoid(log_a)` plays the role of
-   `σ(Λ)` in Eq. (3), and `8 * r_t` plays the role of `c · r_t`. The effective initial
-   decay is `sigmoid(7.5)^8 ≈ 0.9953`, near the top of the reference's [0.9, 0.999] range.
+2. **log_a parameterization instead of softplus(a_param), with role-specific init.**
+   The reference stores `a_param` and computes decay as `exp(-8 * gate_a * softplus(a_param))`,
+   initialized via `rnn_param_init(min_rad=0.9, max_rad=0.999)` so that `a^c` is uniform
+   in [0.9, 0.999] across channels. Our implementation stores `log_a` and computes
+   `a_base = sigmoid(log_a)`, then `a_t = a_base^(8 * r_t)`.
+
+   **Critical: log_a_init differs by role.** Using 7.5 everywhere (as originally implemented)
+   set all channels to a_base≈0.9994, half-life≈289 steps, and gradient
+   (1-sigmoid(7.5))≈0.0006 — effectively frozen. All encoder_out positions converge to the
+   same running-average vector; the inner transformer is blind; the model collapses to
+   unigram prediction (~9.7 BPC). This failure burned three 50k-step Phase 2 runs.
+
+   Current init values (phase2/model.py):
+   - Zone E: `log_a_init=3.0` → a_base≈0.953, half-life≈4 steps, gradient≈0.047
+   - Zone D: `log_a_init=0.0` → a_base=0.500, half-life<1 step,  gradient=0.250
+
+   The softplus parameterization (gradient = sigmoid(a_param) ≈ 0.5–1.0 regardless of
+   the decay value) is strictly better conditioned. This is a known remaining deviation
+   to address after A1 validation passes.
 
 3. **float32 promotion for sigmoid(log_a) only.** The reference promotes all accumulation
    to float32 inside `rnn_scan`. We promote only the `sigmoid(log_a)` computation to float32
@@ -186,9 +199,9 @@ class SqrtBoundDerivative(torch.autograd.Function):
    both produce values in (0, 1). Check `phase2/model.py:130–131`.
 
 2. **Recurrent coefficient:** Confirm `a_t = sigmoid(log_a)^(8 * r_t)` produces values
-   strictly in (0, 1). With `log_a` initialized to 7.5: `sigmoid(7.5) ≈ 0.9994`,
-   `0.9994^8 ≈ 0.9953`. At training end, `log_a` should have learned smaller values in
-   channels that attend to shorter contexts.
+   strictly in (0, 1). Zone E init: `sigmoid(3.0)^8 ≈ 0.68`. Zone D init: `sigmoid(0.0)^8
+   = 0.004`. Both are in (0, 1). Confirm `log_a_init=3.0` in ZoneE.recurrence and
+   `log_a_init=0.0` in ZoneD.recurrence (phase2/model.py lines ~281, ~398).
 
 3. **Float32 promotion for sigmoid(log_a):** The float16 max less than 1.0 is 0.99951
    (exponent=-1, mantissa=1023: value = (1 + 1023/1024) * 0.5 = 2047/2048). sigmoid(7.5)
