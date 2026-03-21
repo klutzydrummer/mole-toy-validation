@@ -95,6 +95,45 @@ run_phase1() {
         $RESUME_FLAG
 }
 
+# ── Phase 2 smoke test ─────────────────────────────────────────────────────────
+# Runs 1000 steps of hdc_rulebased and checks health metrics defined in
+# references/components/zone_ed_pipeline.md checklist item 10.
+# BLOCKS all Phase 2 training if it fails or if phase2/model.py has changed
+# since the last passing run.
+run_smoke_test() {
+    echo ""
+    echo "========================================"
+    echo "  Phase 2 Smoke Test (pre-flight check)"
+    echo "========================================"
+
+    # First check if a current passing result is already on file.
+    if python utils/smoke_test.py --check-only 2>/dev/null; then
+        echo "  Smoke test current — skipping re-run."
+        return 0
+    fi
+
+    echo "  Running 1000-step smoke test (hdc_rulebased)..."
+    if ! python utils/smoke_test.py; then
+        echo ""
+        echo "========================================"
+        echo "  SMOKE TEST FAILED — Phase 2 BLOCKED"
+        echo "========================================"
+        echo ""
+        echo "  The Phase 2 pipeline has a health problem that will cause all"
+        echo "  configs to waste compute and plateau at ~9.7 BPC (unigram entropy)."
+        echo "  Check checkpoints/smoke_test_result.json for which checks failed."
+        echo ""
+        echo "  Required before re-running:"
+        echo "    1. Fix the root cause (see failed checks above)"
+        echo "    2. Run full verification: tell Claude 'run full verification'"
+        echo "    3. python utils/verify.py update --result pass --report <path>"
+        echo "    4. git commit"
+        echo "    5. Re-run this script"
+        echo ""
+        exit 1
+    fi
+}
+
 # ── Phase 2 runner ─────────────────────────────────────────────────────────────
 # args: <config> [total_steps] [mol_ckpt]
 run_phase2() {
@@ -146,7 +185,8 @@ case "$TARGET" in
     run_phase1 mol
     run_phase1 compose
 
-    # Phase 2 — hdc_rulebased always first (pipeline validation before learned routing)
+    # Phase 2 — smoke test gates ALL configs, no exceptions
+    run_smoke_test
     run_phase2 hdc_rulebased
     run_phase2 hdc_gate
     run_phase2 hdc_stride
@@ -165,7 +205,8 @@ case "$TARGET" in
     ;;
 
   phase2)
-    # hdc_rulebased always first
+    # smoke test gates ALL Phase 2 configs, no exceptions
+    run_smoke_test
     run_phase2 hdc_rulebased
     run_phase2 hdc_gate
     run_phase2 hdc_stride
@@ -183,21 +224,17 @@ case "$TARGET" in
 
   # Individual Phase 2 configs (standard, 50k steps)
   hdc_rulebased | hdc_gate | hdc_stride | hdc_r2 | hdc_r8 | hdc_e2e_isolated)
-    if [ "$TARGET" = "hdc_gate" ] && [ ! -f "checkpoints/hdc_rulebased_summary.json" ]; then
-        echo "WARNING: hdc_rulebased has not completed yet."
-        echo "         hdc_rulebased validates the HDC pipeline before learned routing."
-        echo "         It is strongly recommended to run it first."
-        echo "         Continuing in 5 seconds — Ctrl+C to cancel."
-        sleep 5
-    fi
+    run_smoke_test
     run_phase2 "$TARGET"
     ;;
 
-  # Individual upcycle configs (25k steps, requires mol_best.pt)
+  # Individual upcycle configs (50k steps, requires mol_best.pt)
   hdc_upcycle_stride)
+    run_smoke_test
     run_phase2 hdc_upcycle_stride 50000 "checkpoints/mol_best.pt"
     ;;
   hdc_upcycle_gate)
+    run_smoke_test
     run_phase2 hdc_upcycle_gate 50000 "checkpoints/mol_best.pt"
     ;;
 

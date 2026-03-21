@@ -190,9 +190,11 @@ class SqrtBoundDerivative(torch.autograd.Function):
    `0.9994^8 ≈ 0.9953`. At training end, `log_a` should have learned smaller values in
    channels that attend to shorter contexts.
 
-3. **Float32 promotion for sigmoid(log_a):** Under AMP float16, `sigmoid(7.5)` rounds to
-   1.0 (float16 max < 1.0 is 0.9990), which makes `a_t = 1.0` and `1 − a_t² = 0`.
-   Confirm `torch.sigmoid(self.log_a.float()).to(x.dtype)` at `phase2/model.py:139`.
+3. **Float32 promotion for sigmoid(log_a):** The float16 max less than 1.0 is 0.99951
+   (exponent=-1, mantissa=1023: value = (1 + 1023/1024) * 0.5 = 2047/2048). sigmoid(7.5)
+   = 0.99944 rounds to 0.99951 in float16 — NOT to 1.0. However, the code correctly
+   computes in float32 regardless, which is the right practice. Confirm
+   `torch.sigmoid(self.log_a.float()).to(x.dtype)` at `phase2/model.py:139`.
 
 4. **Norm-preserving input term:** Confirm `b_t = sqrt((1 − a_t²).clamp(min=1e-6)) * (i_t * x_conv)`
    at `phase2/model.py:145`. The clamp prevents NaN; the sqrt term is Eq. (4)'s

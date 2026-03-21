@@ -269,6 +269,20 @@ The `loss_comp` term is our simplified form of H-Net's Eq. 10 ratio loss. H-Net'
 
 9. **boundary_probs_for_zd is detached only for isolated routing.** In `hdc_e2e_isolated`, confirm `boundary_probs_for_zd` is the detached tensor and that `torch.autograd.grad` from `loss_ntp` does not reach `BoundaryRouter.W_q` or `BoundaryRouter.W_k` through Zone D. In all other configs confirm gradients do flow.
 
-10. **EMA collapse detection.** After training for 1000 steps with `hdc_rulebased`, compute the variance of `smoothed` vectors across the M dimension. If variance < 1e-4 (all concept positions have collapsed to nearly the same vector), the `clamp(min=0.1)` is not effective and the encoder outputs may be too uniform. This indicates Zone E is not producing meaningful boundary signal.
+10. **EMA collapse detection — MANDATORY PRE-FLIGHT CHECK, NOT OPTIONAL.**
+    `utils/smoke_test.py` automates this and is called by `run_experiments.sh` before
+    every Phase 2 config. It MUST PASS or training is blocked.
+
+    What it checks after 1000 training steps of `hdc_rulebased`:
+    - `encoder_out.var(dim=1).mean() > 1e-4` — Zone E encoder positions are diverse.
+      If near zero: Zone E CRL is over-smoothing (log_a init too large, gradient through
+      log_a ∝ log(sigmoid(log_a)) is too small to adapt). All positions look the same,
+      inner transformer is blind, model collapses to unigram prediction at ~9.7 BPC.
+    - `concept_tokens.var(dim=1).mean() > 1e-4` — concept tokens are diverse.
+    - loss at steps 800-1000 < 0.90 × loss at steps 0-200 — the model is actually learning.
+    - No NaN/inf anywhere.
+
+    This failure mode burned three full 50k-step Phase 2 runs (hdc_rulebased, hdc_gate,
+    hdc_stride) before it was diagnosed. The smoke test exists specifically to prevent that.
 
 11. **Loss_comp drives boundary_probs toward 1/R.** Over training, log `boundary_probs.mean()`. It should converge toward `1/R` (0.25 for R=4). Large persistent deviation indicates `lambda_comp` needs tuning or the router is not receiving sufficient gradient signal.
