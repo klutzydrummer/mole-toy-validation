@@ -2,7 +2,9 @@
 
 **Component file:** `references/components/mol_ffn.md`
 **Validator:** Phase B' automated verification agent
-**Date:** 2026-03-17
+**Date:** 2026-03-21 (re-verified; original 2026-03-17)
+
+**Re-verification note (2026-03-21):** Full re-check performed after `phase2/model.py` log_a_init fix. MoLFFN in `phase1/model.py` and `phase2/model.py` InnerTransformer are unaffected by that change. All previously verified claims remain PASS. Critical invariants confirmed: `scores=sigmoid(logits)` at line 279, unbiased `topk_scores` at line 282, load-balance sign at line 316. Two pre-existing minor warnings retained: (1) checklist item 4 cites `self.B` at line 221, actual line 220; (2) checklist item 11 says `model.get_load_stats()` but correct method is `model.get_mol_stats()` (line 468) — `get_load_stats()` is on `MoLFFN` instances only.
 **Sources checked:**
 - `references/sources/papers/deepseek_v3_2412.19437.md`
 - `references/sources/code/deepseek_v3_moe.py`

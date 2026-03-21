@@ -584,7 +584,8 @@ class HDCModel(nn.Module):
 
     def _init_weights(self, m):
         """Touches only nn.Linear and nn.Embedding.
-        CausalRecurrenceLayer.log_a (nn.Parameter, not Linear) keeps its 7.5 init.
+        CausalRecurrenceLayer.log_a (nn.Parameter, not Linear) keeps its role-specific init
+        (ZoneE: 3.0, ZoneD: 0.0 — default 7.5 is never used in practice).
         BoundaryRouter W_q/W_k are re-initialized to eye_ after this pass."""
         if isinstance(m, nn.Linear):
             nn.init.normal_(m.weight, mean=0.0, std=0.02)

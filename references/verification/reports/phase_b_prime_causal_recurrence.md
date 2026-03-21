@@ -5,7 +5,13 @@
 - `references/sources/papers/griffin_2402.19427.md`
 - `references/sources/code/griffin_rglru.py`
 
-**Date:** 2026-03-17
+**Date:** 2026-03-21 (re-verified; original 2026-03-17)
+
+**Re-verification note (2026-03-21):** Full re-check performed including the log_a_init fix (ZoneE=3.0, ZoneD=0.0). All 6 authoritative equations verified verbatim in `griffin_2402.19427.md`. All 4 reference code snippets verified verbatim in `griffin_rglru.py`. All 7 intentional deviations confirmed present and accurately described. Two issues found:
+
+1. **Line numbers systematically ~7 off (Minor):** Spec cites ZoneE recurrence at line 281 (actual 289), ZoneD at 398 (actual 407), `sigmoid(log_a.float())` at 139 (actual 146), `b_t = sqrt(...)` at 145 (actual 152), `out_proj/RMSNorm` at 115-116 (actual 124-125), `return norm(out_proj(out))` at 149 (actual 156). Correctly cited: `_parallel_scan` (44), `CausalRecurrenceLayer` (83), float32 lines (69-70, 76), clamp (71). Documentation only.
+
+2. **Stale docstring fixed:** `phase2/model.py:587` said `"keeps its 7.5 init"` — incorrect. Fixed in this session to reflect role-specific inits (ZoneE: 3.0, ZoneD: 0.0). Default 7.5 is never used in practice.
 
 ---
 

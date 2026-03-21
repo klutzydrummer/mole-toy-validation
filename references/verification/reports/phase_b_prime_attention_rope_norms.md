@@ -2,8 +2,10 @@
 
 **Component file:** `references/components/attention_rope_norms.md`
 **Validator:** Phase B' validation agent
-**Date:** 2026-03-17
+**Date:** 2026-03-21 (re-verified; original 2026-03-17)
 **Overall verdict: PASS**
+
+**Re-verification note (2026-03-21):** Full re-check performed after `phase2/model.py` log_a_init fix. Attention, RoPE, RMSNorm, SwiGLU are unaffected. All previously verified claims remain PASS. Implementation cross-checks now confirmed against actual line numbers: RMSNorm at `phase1/model.py:30-38`, `precompute_rope` at 41-54 (float32 dtype, half-width cache), `apply_rope` at line 74-75, SwiGLU at 81-93 (`int(d*8/3)` rounded to nearest 64). `phase2/model.py` imports RMSNorm directly from phase1 (line 37). MLA confirmed absent from both model files. Pre-existing note: MLA naive cache row (24576) in the comparison table is arithmetically correct but derived, not explicitly in the cited paper's table — minor traceability gap, not an error.
 
 All equations and code snippets in the component file are traceable to their cited sources.
 One minor point of note (the MLA source file attribution) and two technical observations are

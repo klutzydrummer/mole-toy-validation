@@ -1,10 +1,16 @@
 # Phase B' Validation Report: mhc.md
 
-**Date:** 2026-03-17
+**Date:** 2026-03-21 (re-verified; original 2026-03-17)
 **Component file:** `references/components/mhc.md`
 **Sources checked:**
 - `references/sources/papers/mhc_2512.24880.md`
 - `references/sources/code/mhc_hyper_connections.py`
+
+**Re-verification note (2026-03-21):** Full re-check performed after `phase2/model.py` log_a_init
+fix. mhc.md and `phase1/model.py` mHC implementation are unaffected by that change. All
+previously verified claims remain PASS. All 10 checklist items confirmed. All 6 intentional
+deviations confirmed present and accurately described. Pre-existing dim=0/dim=-1 prose
+inconsistency (see C1 below) unchanged — minor, does not affect correctness.
 
 ---
 

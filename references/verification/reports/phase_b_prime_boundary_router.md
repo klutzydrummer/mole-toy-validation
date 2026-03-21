@@ -6,7 +6,18 @@
 - `references/sources/papers/dlcm.md` (DLCM, arXiv:2512.24617)
 - `references/sources/code/hnet_boundary.py` (H-Net `RoutingModule` / `DeChunkLayer`, MIT)
 
-**Overall verdict: PASS**
+**Date:** 2026-03-21 (re-verified; original 2026-03-17)
+**Overall verdict: PASS with issues**
+
+**Re-verification note (2026-03-21):** Full re-check performed including implementation cross-check against actual line numbers. All algorithmic invariants correct — no training bugs. Four issues found (all documentation):
+
+1. **Line numbers systematically ~7 off (Low):** All `model.py` line citations in the spec are ~7 lines below actual. `BoundaryRouter` at 163 (spec: 156), `ZoneE` at 265 (spec: 258), identity init at 202-203 (spec: 195-196), p₀ pad at 237/245 (spec: 230/238), topk at 249-250 (spec: 242-243), detach at 254 (spec: 247).
+
+2. **`loss_comp` citation wrong (Low-Moderate):** Spec cites `model.py:480` (docstring, not code) and `train.py:592` (file has only 455 lines). Actual location: `train.py:298`.
+
+3. **`_no_reinit` flag absent (Informational):** H-Net uses `weight._no_reinit = True`. Our code instead re-applies `nn.init.eye_` explicitly after `_init_weights` at `model.py:581-583`. Same net result, different mechanism.
+
+4. **Checklist item 9 framing imprecise (Low):** Says "confirm `W_q.weight.grad` is None with `learned_isolated`" — but `loss_comp` gradient does reach W_q/W_k in that mode. Only LM loss gradient is blocked. Spec prose is correct; checklist phrasing misleads.
 
 All equations are traceable to their cited sources (verbatim or mathematically equivalent). All code snippets are present verbatim in the source file at the stated line ranges. All stated deviations are accurately described. No internal contradictions were found. One minor indexing note is documented below.
 

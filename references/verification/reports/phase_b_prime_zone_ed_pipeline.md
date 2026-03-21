@@ -5,8 +5,18 @@
 - `references/sources/papers/hnet_2507.07955.md` (H-Net arXiv:2507.07955)
 - `references/sources/code/hnet_boundary.py` (goombalab/hnet `dc.py`, MIT license)
 
-**Date:** 2026-03-17
+**Date:** 2026-03-21 (re-verified; original 2026-03-17)
 **Validator:** Phase B' validation agent
+
+**Re-verification note (2026-03-21):** Full re-check including implementation cross-check against actual line numbers. Implementation is substantially correct — no training bugs. Three issues found (all documentation):
+
+1. **Line numbers systematically ~9 off (Low):** Every cited line range in "Our implementation" is off by ~9 lines. ZoneE.forward (cited 258-313, actual 293-321), BoundaryRouter.forward (cited 156-251, actual 205-258), ZoneD.forward (cited 370-464, actual 412-473), EMA block (cited 426-436, actual 435-445), plug-back (cited 444-451, actual 453-460), gated residual (cited 453-456, actual 462-465), decoder recurrence (cited 458-463, actual 467-473), HDCModel.forward (cited 584-611, actual 596-623).
+
+2. **`_no_reinit` mechanism description inaccurate (Low):** Spec says "`_no_reinit = True` flag prevents re-initialization." Our code does NOT set that flag. Instead `HDCModel.__init__` lines 580-583 re-apply `nn.init.eye_` explicitly after `self.apply(_init_weights)`. Same net result, different mechanism.
+
+3. **Checklist item 1 over-claims for fixed_stride (Low):** States "in all modes position 0 is forced to p=1.0." False for `fixed_stride` — `boundary_probs[:,0] = 0.0` in that mode. No training bug because `h0 = concept_out[:,0]` is set directly at line 436, bypassing the p formula. But the checklist claim is inaccurate for `hdc_stride`.
+
+4. **Checklist item 10 smoke test thresholds — PASS, exact match:** `ENCODER_DIVERSITY_MIN=1e-4`, `CONCEPT_DIVERSITY_MIN=1e-4`, `LOSS_REDUCTION_REQUIRED=0.90`, NaN/inf check all confirmed against `utils/smoke_test.py`.
 
 ---
 
