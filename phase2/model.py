@@ -576,6 +576,17 @@ class HDCModel(nn.Module):
 
         # Standard init for all nn.Linear and nn.Embedding
         self.apply(self._init_weights)
+
+        # Scaled init for residual branch output projections (GPT-2 / DS-Init).
+        # std = 0.02 / sqrt(2 * n_layers). At 8 layers: std ≈ 0.005.
+        residual_std = 0.02 / math.sqrt(2 * n_layers)
+        for block in self.inner.blocks:
+            nn.init.normal_(block.attn.out.weight, mean=0.0, std=residual_std)
+            if hasattr(block.ffn, "base_down"):
+                nn.init.normal_(block.ffn.base_down.weight, mean=0.0, std=residual_std)
+            elif hasattr(block.ffn, "down"):
+                nn.init.normal_(block.ffn.down.weight, mean=0.0, std=residual_std)
+
         # Re-apply eye init for BoundaryRouter (apply above would overwrite it)
         router = self.zone_e.router
         if hasattr(router, "W_q"):

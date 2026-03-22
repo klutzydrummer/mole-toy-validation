@@ -58,7 +58,7 @@ def evaluate(model, val_loader, device, max_batches=50):
         if n_batches >= max_batches:
             break
         x, y = x.to(device), y.to(device)
-        with torch.autocast(device_type=device.type, dtype=torch.float16,
+        with torch.autocast(device_type=device.type, dtype=torch.bfloat16,
                             enabled=(device.type == "cuda")):
             logits = model(x)
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), y.view(-1))
@@ -73,7 +73,7 @@ def train(config: str, d: int = 512, n_layers: int = 8, n_heads: int = 8,
           eval_interval: int = 2500, log_interval: int = 100,
           max_lr: float = 3e-4, ckpt_dir: str = "checkpoints",
           mhc_dynamic: bool = False, n_experts: int = 8,
-          mol_rank: int = 8, mol_top_k: int = 2,
+          mol_rank: int = 8, mol_top_k: int = 2, d_ff: int = None,
           resume: bool = False, no_compile: bool = False,
           tokenizer: str = "bpe", dataset: str = "wikitext103",
           teamspace: str = "mole-toy-validation-project"):
@@ -98,7 +98,7 @@ def train(config: str, d: int = 512, n_layers: int = 8, n_heads: int = 8,
         config=config, d=d, n_layers=n_layers, n_heads=n_heads,
         vocab_size=vocab_size, max_len=seq_len + 64,
         mhc_dynamic=mhc_dynamic, n_experts=n_experts,
-        mol_rank=mol_rank, mol_top_k=mol_top_k,
+        mol_rank=mol_rank, mol_top_k=mol_top_k, d_ff=d_ff,
     ).to(device)
 
     n_params = ParamCounter.count(model)
@@ -107,12 +107,16 @@ def train(config: str, d: int = 512, n_layers: int = 8, n_heads: int = 8,
     train_loader = get_dataloader("train", seq_len=seq_len, batch_size=batch_size)
     val_loader = get_dataloader("val", seq_len=seq_len, batch_size=batch_size)
 
-    # Optimizer
+    # Optimizer — two param groups: weight matrices get decay, 1D params do not.
+    # 1D params include biases, RMSNorm scales (nn.Parameter shape [d]), and any
+    # other 1D tensors. 2D+ matrices (Linear weights, embeddings) get decay.
+    decay_params   = [p for p in model.parameters() if p.requires_grad and p.ndim >= 2]
+    nodecay_params = [p for p in model.parameters() if p.requires_grad and p.ndim < 2]
     optimizer = torch.optim.AdamW(
-        model.parameters(), lr=max_lr, betas=(0.9, 0.95),
-        weight_decay=0.1, fused=(device.type == "cuda"),
+        [{"params": decay_params, "weight_decay": 0.1},
+         {"params": nodecay_params, "weight_decay": 0.0}],
+        lr=max_lr, betas=(0.9, 0.95), fused=(device.type == "cuda"),
     )
-    scaler = torch.amp.GradScaler(enabled=use_amp)
 
     # Resume
     start_step = 0
@@ -125,7 +129,6 @@ def train(config: str, d: int = 512, n_layers: int = 8, n_heads: int = 8,
         ckpt = torch.load(resume_path, map_location=device, weights_only=False)
         model.load_state_dict(ckpt["model_state"])
         optimizer.load_state_dict(ckpt["optimizer_state"])
-        scaler.load_state_dict(ckpt["scaler_state"])
         start_step = ckpt["step"] + 1
         best_val_bpc = ckpt.get("best_val_bpc", float("inf"))
         print(f"  Resumed at step {start_step}, best_val_bpc={best_val_bpc:.4f}")
@@ -176,16 +179,14 @@ def train(config: str, d: int = 512, n_layers: int = 8, n_heads: int = 8,
             pg["lr"] = lr
 
         optimizer.zero_grad(set_to_none=True)
-        with torch.autocast(device_type=device.type, dtype=torch.float16,
+        with torch.autocast(device_type=device.type, dtype=torch.bfloat16,
                             enabled=use_amp):
             logits = model(x)
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), y.view(-1))
 
-        scaler.scale(loss).backward()
-        scaler.unscale_(optimizer)
+        loss.backward()
         grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0).item()
-        scaler.step(optimizer)
-        scaler.update()
+        optimizer.step()
 
         log_loss_accum += loss.item()
         log_count += 1
@@ -235,7 +236,6 @@ def train(config: str, d: int = 512, n_layers: int = 8, n_heads: int = 8,
                 "step": step,
                 "model_state": _unwrap(model).state_dict(),
                 "optimizer_state": optimizer.state_dict(),
-                "scaler_state": scaler.state_dict(),
                 "best_val_bpc": best_val_bpc,
             }, resume_path)
 
@@ -274,7 +274,7 @@ def train(config: str, d: int = 512, n_layers: int = 8, n_heads: int = 8,
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Phase 1 Training")
     parser.add_argument("--config", type=str, default="baseline",
-                        choices=["baseline", "mhc", "mol", "compose"])
+                        choices=["baseline", "baseline_wide", "mhc", "mol", "mol_single", "compose"])
     parser.add_argument("--d", type=int, default=512)
     parser.add_argument("--n_layers", type=int, default=8)
     parser.add_argument("--n_heads", type=int, default=8)
@@ -290,6 +290,9 @@ if __name__ == "__main__":
     parser.add_argument("--n_experts", type=int, default=8)
     parser.add_argument("--mol_rank", type=int, default=8)
     parser.add_argument("--mol_top_k", type=int, default=2)
+    parser.add_argument("--d_ff", type=int, default=None,
+                        help="FFN hidden dim override (default: auto = d*8/3 rounded to 64). "
+                             "Use 1600 for baseline_wide to match mol total params.")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--no_compile", action="store_true")
     parser.add_argument("--teamspace", type=str, default="mole-toy-validation-project",

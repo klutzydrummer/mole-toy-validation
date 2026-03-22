@@ -2,13 +2,13 @@
   "_note": "Updated by utils/verify.py --full. Do not edit manually.",
   "files": {
     "phase1/model.py": {
-      "git_hash": "b37dc28aa6e07680debc8df4376a6be39b0d01ff",
+      "git_hash": "c8f91c18d88c862545fb61cb481460f1a28b5b97",
       "verified_at": "2026-03-21T00:00:00Z",
       "result": "pass",
       "report": "references/verification/reports/"
     },
     "phase2/model.py": {
-      "git_hash": "204015ae2af05ee6a3e6e2287c57336131c2181f",
+      "git_hash": "e27503710f7b4ed63f14f12420ec01c658c40b9c",
       "verified_at": "2026-03-21T00:00:00Z",
       "result": "pass",
       "report": "references/verification/reports/"

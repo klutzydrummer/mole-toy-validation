@@ -102,7 +102,7 @@ def evaluate(model, val_loader, device, max_batches=50):
         if n_batches >= max_batches:
             break
         x, y = x.to(device), y.to(device)
-        with torch.autocast(device_type=device.type, dtype=torch.float16,
+        with torch.autocast(device_type=device.type, dtype=torch.bfloat16,
                             enabled=(device.type == "cuda")):
             logits, bp = model(x)
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), y.view(-1))
@@ -133,7 +133,7 @@ def evaluate_per_position(model, val_loader, device, boundary_idx_key, max_batch
             break
         x, y = x.to(device), y.to(device)
         B, L  = x.shape
-        with torch.autocast(device_type=device.type, dtype=torch.float16,
+        with torch.autocast(device_type=device.type, dtype=torch.bfloat16,
                             enabled=(device.type == "cuda")):
             logits, bp = model(x)
 
@@ -218,18 +218,29 @@ def train(
     # Separate param groups: router (W_q, W_k) gets a lower LR to prevent the
     # gradient explosion that occurs when routing activates after the cold-start
     # phase. Both groups follow the same cosine decay shape via get_lr_scale.
+    # Three param groups:
+    #   main decay    — 2D+ weight matrices (main network, not router), weight_decay=0.1
+    #   main nodecay  — 1D params (biases, RMSNorm scales, log_a recurrence params), wd=0.0
+    #   router        — W_q, W_k (2D), lower LR, weight_decay=0.1
+    # 1D params include RMSNorm.weight [d], CausalRecurrenceLayer.log_a [d_outer], biases.
     _router = model.zone_e.router
     _router_ids = {id(p) for p in _router.parameters() if p.requires_grad}
-    _main_params   = [p for p in model.parameters() if p.requires_grad and id(p) not in _router_ids]
+    _main_decay   = [p for p in model.parameters()
+                     if p.requires_grad and id(p) not in _router_ids and p.ndim >= 2]
+    _main_nodecay = [p for p in model.parameters()
+                     if p.requires_grad and id(p) not in _router_ids and p.ndim < 2]
     _router_params = [p for p in model.parameters() if p.requires_grad and id(p) in _router_ids]
-    _param_groups  = [{"params": _main_params,   "peak_lr": max_lr,    "lr": max_lr}]
+    _param_groups  = [
+        {"params": _main_decay,   "peak_lr": max_lr,   "lr": max_lr,   "weight_decay": 0.1},
+        {"params": _main_nodecay, "peak_lr": max_lr,   "lr": max_lr,   "weight_decay": 0.0},
+    ]
     if _router_params:
-        _param_groups.append({"params": _router_params, "peak_lr": router_lr, "lr": router_lr})
+        _param_groups.append(
+            {"params": _router_params, "peak_lr": router_lr, "lr": router_lr, "weight_decay": 0.1}
+        )
     optimizer = torch.optim.AdamW(
-        _param_groups, betas=(0.9, 0.95),
-        weight_decay=0.1, fused=(device.type == "cuda"),
+        _param_groups, betas=(0.9, 0.95), fused=(device.type == "cuda"),
     )
-    scaler = torch.amp.GradScaler(enabled=use_amp)
 
     os.makedirs(ckpt_dir, exist_ok=True)
     resume_path = os.path.join(ckpt_dir, f"{config}_latest.pt")
@@ -241,7 +252,6 @@ def train(
         ckpt = torch.load(resume_path, map_location=device, weights_only=False)
         model.load_state_dict(ckpt["model_state"])
         optimizer.load_state_dict(ckpt["optimizer_state"])
-        scaler.load_state_dict(ckpt["scaler_state"])
         start_step   = ckpt["step"] + 1
         best_val_bpc = ckpt.get("best_val_bpc", float("inf"))
         print(f"  Resumed at step {start_step}, best_val_bpc={best_val_bpc:.4f}")
@@ -292,17 +302,15 @@ def train(
             pg["lr"] = pg["peak_lr"] * lr_scale
 
         optimizer.zero_grad(set_to_none=True)
-        with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=use_amp):
+        with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=use_amp):
             logits, bp = model(x)
             loss_ntp   = F.cross_entropy(logits.view(-1, logits.size(-1)), y.view(-1))
             loss_comp  = (bp.mean() - 1.0 / _unwrap(model).R) ** 2
             loss       = loss_ntp + effective_lambda * loss_comp
 
-        scaler.scale(loss).backward()
-        scaler.unscale_(optimizer)
+        loss.backward()
         grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0).item()
-        scaler.step(optimizer)
-        scaler.update()
+        optimizer.step()
 
         log_loss_accum += loss_ntp.item()
         log_comp_accum += loss_comp.item()
@@ -386,7 +394,6 @@ def train(
                 "step": step,
                 "model_state": _unwrap(model).state_dict(),
                 "optimizer_state": optimizer.state_dict(),
-                "scaler_state": scaler.state_dict(),
                 "best_val_bpc": best_val_bpc,
             }, resume_path)
 

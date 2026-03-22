@@ -82,6 +82,16 @@ run_phase1() {
         RESUME_FLAG="--resume"
     fi
 
+    # Config-specific overrides
+    # baseline_wide: d_ff=1600 to match mol total param count (~31.1M) for Q1 fair comparison
+    # mol_single: mol_rank=64 (= 8 experts × rank 8) for Q2 capacity-matched single-LoRA
+    EXTRA_FLAGS=""
+    if [ "$cfg" = "baseline_wide" ]; then
+        EXTRA_FLAGS="--d_ff 1600"
+    elif [ "$cfg" = "mol_single" ]; then
+        EXTRA_FLAGS="--mol_rank 64"
+    fi
+
     python phase1/train.py \
         --config    "$cfg" \
         --d            512 \
@@ -92,6 +102,7 @@ run_phase1() {
         --seq_len      256 \
         --eval_interval 2500 \
         --log_interval  100 \
+        $EXTRA_FLAGS \
         $RESUME_FLAG
 }
 
@@ -181,8 +192,10 @@ case "$TARGET" in
   all | phase1_then_phase2)
     # Phase 1
     run_phase1 baseline
+    run_phase1 baseline_wide
     run_phase1 mhc
     run_phase1 mol
+    run_phase1 mol_single
     run_phase1 compose
 
     # Phase 2 — smoke test gates ALL configs, no exceptions
@@ -199,8 +212,10 @@ case "$TARGET" in
 
   phase1)
     run_phase1 baseline
+    run_phase1 baseline_wide
     run_phase1 mhc
     run_phase1 mol
+    run_phase1 mol_single
     run_phase1 compose
     ;;
 
@@ -220,6 +235,14 @@ case "$TARGET" in
   # Individual Phase 1 configs
   baseline | mhc | mol | compose)
     run_phase1 "$TARGET"
+    ;;
+
+  baseline_wide)
+    run_phase1 baseline_wide
+    ;;
+
+  mol_single)
+    run_phase1 mol_single
     ;;
 
   # Individual Phase 2 configs (standard, 50k steps)
@@ -256,7 +279,7 @@ echo "========================================"
 python - <<'EOF'
 import json, os, glob
 
-PHASE1 = ["baseline", "mhc", "mol", "compose"]
+PHASE1 = ["baseline", "baseline_wide", "mhc", "mol", "mol_single", "compose"]
 PHASE2 = [
     "hdc_rulebased", "hdc_gate", "hdc_stride", "hdc_r2", "hdc_r8",
     "hdc_e2e_isolated", "hdc_upcycle_stride", "hdc_upcycle_gate",

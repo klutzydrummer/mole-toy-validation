@@ -224,6 +224,41 @@ class LoRAAdapter(nn.Module):
         return (x @ self.A @ self.B) * self.scale
 
 
+class SingleLoRAFFN(nn.Module):
+    """
+    Single high-rank LoRA over a SwiGLU base — no routing, no experts.
+
+    Q2 ablation control for MoLFFN: same base FFN + approximately equal total
+    LoRA parameter count, but no routing or specialization mechanism.
+
+    MoLFFN has 9 adapter sets (1 shared + 8 experts) × rank 8 = rank-72 equivalent.
+    We use rank=64 (round number) as the matched-capacity baseline.
+    """
+
+    def __init__(self, d: int, rank: int = 64, d_ff: int = None):
+        super().__init__()
+        if d_ff is None:
+            d_ff = int(d * 8 / 3)
+            d_ff = ((d_ff + 63) // 64) * 64
+        self.d_ff = d_ff
+
+        # Base SwiGLU projections
+        self.base_gate = nn.Linear(d, d_ff, bias=False)
+        self.base_up   = nn.Linear(d, d_ff, bias=False)
+        self.base_down = nn.Linear(d_ff, d, bias=False)
+
+        # Single high-rank LoRA (always active, no routing)
+        self.lora_gate = LoRAAdapter(d, d_ff, rank)
+        self.lora_up   = LoRAAdapter(d, d_ff, rank)
+        self.lora_down = LoRAAdapter(d_ff, d, rank)
+
+    def forward(self, x):
+        gate   = self.base_gate(x) + self.lora_gate(x)
+        up     = self.base_up(x)   + self.lora_up(x)
+        hidden = F.silu(gate) * up
+        return self.base_down(hidden) + self.lora_down(hidden)
+
+
 class MoLFFN(nn.Module):
     """
     Mixture-of-LoRAs FFN with correct weight-space composition.
@@ -343,8 +378,10 @@ class TransformerBlock(nn.Module):
 
     def __init__(self, d: int, n_heads: int, n_streams: int = 1,
                  use_mhc: bool = False, use_mol: bool = False,
+                 use_single_lora: bool = False,
                  mhc_dynamic: bool = False, n_experts: int = 8,
                  mol_rank: int = 4, mol_top_k: int = 2,
+                 d_ff: int = None,
                  max_len: int = 4096):
         super().__init__()
         self.use_mhc = use_mhc
@@ -354,9 +391,11 @@ class TransformerBlock(nn.Module):
         self.attn = CausalSelfAttention(d, n_heads, max_len)
 
         if use_mol:
-            self.ffn = MoLFFN(d, n_experts=n_experts, top_k=mol_top_k, rank=mol_rank)
+            self.ffn = MoLFFN(d, n_experts=n_experts, top_k=mol_top_k, rank=mol_rank, d_ff=d_ff)
+        elif use_single_lora:
+            self.ffn = SingleLoRAFFN(d, rank=mol_rank, d_ff=d_ff)
         else:
-            self.ffn = SwiGLU(d)
+            self.ffn = SwiGLU(d, d_ff=d_ff)
 
         if use_mhc:
             self.hc_attn = HyperConnection(n_streams, d, dynamic=mhc_dynamic)
@@ -396,16 +435,18 @@ class TransformerBlock(nn.Module):
 class ToyTransformer(nn.Module):
 
     CONFIGS = {
-        "baseline": dict(use_mhc=False, use_mol=False, n_streams=1),
-        "mhc":      dict(use_mhc=True,  use_mol=False, n_streams=2),
-        "mol":      dict(use_mhc=False, use_mol=True,  n_streams=1),
-        "compose":  dict(use_mhc=True,  use_mol=True,  n_streams=2),
+        "baseline":       dict(use_mhc=False, use_mol=False, use_single_lora=False, n_streams=1),
+        "baseline_wide":  dict(use_mhc=False, use_mol=False, use_single_lora=False, n_streams=1),
+        "mhc":            dict(use_mhc=True,  use_mol=False, use_single_lora=False, n_streams=2),
+        "mol":            dict(use_mhc=False, use_mol=True,  use_single_lora=False, n_streams=1),
+        "mol_single":     dict(use_mhc=False, use_mol=False, use_single_lora=True,  n_streams=1),
+        "compose":        dict(use_mhc=True,  use_mol=True,  use_single_lora=False, n_streams=2),
     }
 
     def __init__(self, config: str = "baseline", d: int = 256, n_layers: int = 8,
                  n_heads: int = 8, vocab_size: int = 256, max_len: int = 2048,
                  mhc_dynamic: bool = False, n_experts: int = 8,
-                 mol_rank: int = 4, mol_top_k: int = 2):
+                 mol_rank: int = 4, mol_top_k: int = 2, d_ff: int = None):
         super().__init__()
 
         cfg = self.CONFIGS[config]
@@ -420,8 +461,10 @@ class ToyTransformer(nn.Module):
             TransformerBlock(
                 d=d, n_heads=n_heads, n_streams=self.n_streams,
                 use_mhc=cfg["use_mhc"], use_mol=cfg["use_mol"],
+                use_single_lora=cfg["use_single_lora"],
                 mhc_dynamic=mhc_dynamic, n_experts=n_experts,
                 mol_rank=mol_rank, mol_top_k=mol_top_k,
+                d_ff=d_ff,
                 max_len=max_len,
             )
             for _ in range(n_layers)
@@ -436,6 +479,19 @@ class ToyTransformer(nn.Module):
             self.stream_collapse_logits = nn.Parameter(torch.zeros(self.n_streams))
 
         self.apply(self._init_weights)
+
+        # Scaled init for residual branch output projections (GPT-2 / DS-Init).
+        # Matrices that write back to the residual stream are initialized with a
+        # smaller std = 0.02 / sqrt(2 * n_layers) to prevent residual accumulation
+        # from growing with depth. At 8 layers: std ≈ 0.005.
+        residual_std = 0.02 / math.sqrt(2 * n_layers)
+        for block in self.blocks:
+            nn.init.normal_(block.attn.out.weight, mean=0.0, std=residual_std)
+            ffn = block.ffn
+            if hasattr(ffn, "base_down"):       # MoLFFN or SingleLoRAFFN
+                nn.init.normal_(ffn.base_down.weight, mean=0.0, std=residual_std)
+            elif hasattr(ffn, "down"):           # SwiGLU
+                nn.init.normal_(ffn.down.weight, mean=0.0, std=residual_std)
 
     def _init_weights(self, m):
         """Only touches nn.Linear and nn.Embedding. LoRAAdapter and
