@@ -96,7 +96,6 @@ run_phase1() {
         --config    "$cfg" \
         --d            512 \
         --n_heads      8 \
-        --mol_rank     8 \
         --total_steps  100000 \
         --batch_size   32 \
         --seq_len      256 \
