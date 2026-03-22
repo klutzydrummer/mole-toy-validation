@@ -301,7 +301,7 @@ STATUS_ICON = {
 # beat_baseline_config = name of the config this should beat, or None
 _CONFIG_HYPOTHESIS = {
     # Phase 1
-    "baseline":         (None,           "Control. Vanilla transformer. Target ~1.2–1.4 BPC at 50k steps."),
+    "baseline":         (None,           "Control. Vanilla transformer. Target ~3.5–3.6 BPC at 100k steps."),
     "mhc":              ("baseline",     "Should beat baseline: mHC multi-stream residual adds representational diversity."),
     "mol":              ("baseline",     "Should beat baseline: MoL sparse experts add capacity without proportional cost."),
     "compose":          ("mol",          "Should beat mol: additive gains if mHC and MoL are orthogonal."),
@@ -312,7 +312,7 @@ _CONFIG_HYPOTHESIS = {
     "hdc_r2":           ("hdc_gate",     "R=2 compression sweep. Less compression — may trade throughput for quality."),
     "hdc_r8":           ("hdc_gate",     "R=8 compression sweep. More compression — tests limits of concept formation."),
     "hdc_e2e_isolated":   (None,           "A5 comparison: gradient isolation. Expected near-random boundaries. Should match hdc_stride."),
-    # Upcycle — frozen mol inner, 25k steps, d_outer=128
+    # Upcycle — frozen mol inner, 50k steps
     "hdc_upcycle_stride": (None,           "Upcycle lower bound: fixed-stride + frozen mol inner. Validates Zone E/D can learn around frozen weights."),
     "hdc_upcycle_gate":   ("hdc_upcycle_stride", "Upcycle with learned routing. Should beat upcycle_stride if content-aware boundaries help the frozen inner."),
 }
