@@ -92,7 +92,7 @@ def boundary_entropy(boundary_probs: torch.Tensor) -> float:
 
 
 @torch.no_grad()
-def evaluate(model, val_loader, device, max_batches=50):
+def evaluate(model, val_loader, device, max_batches=50, amp_dtype=torch.bfloat16):
     """Returns (val_loss, val_bpc, compression_ratio)."""
     model.eval()
     total_loss  = 0.0
@@ -102,7 +102,7 @@ def evaluate(model, val_loader, device, max_batches=50):
         if n_batches >= max_batches:
             break
         x, y = x.to(device), y.to(device)
-        with torch.autocast(device_type=device.type, dtype=torch.bfloat16,
+        with torch.autocast(device_type=device.type, dtype=amp_dtype,
                             enabled=(device.type == "cuda")):
             logits, bp = model(x)
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), y.view(-1))
@@ -115,7 +115,7 @@ def evaluate(model, val_loader, device, max_batches=50):
 
 
 @torch.no_grad()
-def evaluate_per_position(model, val_loader, device, boundary_idx_key, max_batches=20):
+def evaluate_per_position(model, val_loader, device, boundary_idx_key, max_batches=20, amp_dtype=torch.bfloat16):
     """
     Compute boundary BPC vs. mid-chunk BPC separately.
     Boundary tokens: positions that were selected as concept tokens.
@@ -133,7 +133,7 @@ def evaluate_per_position(model, val_loader, device, boundary_idx_key, max_batch
             break
         x, y = x.to(device), y.to(device)
         B, L  = x.shape
-        with torch.autocast(device_type=device.type, dtype=torch.bfloat16,
+        with torch.autocast(device_type=device.type, dtype=amp_dtype,
                             enabled=(device.type == "cuda")):
             logits, bp = model(x)
 
@@ -197,8 +197,20 @@ def train(
     device  = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     use_amp = device.type == "cuda"
 
+    # AMP dtype: bfloat16 on Ampere+ (sm >= 80, native BF16 tensor cores).
+    # Fall back to float16 on older hardware (T4 = sm75) to get native FP16 tensor cores.
+    amp_dtype = torch.bfloat16
+    if device.type == "cuda":
+        cap = torch.cuda.get_device_capability()
+        if cap[0] < 8:
+            amp_dtype = torch.float16
+    use_grad_scaler = use_amp and (amp_dtype == torch.float16)
+    scaler = torch.cuda.amp.GradScaler(enabled=use_grad_scaler)
+
     if device.type == "cpu":
         print("WARNING: Running on CPU. This will be very slow.")
+    else:
+        print(f"AMP dtype: {amp_dtype} | GradScaler: {use_grad_scaler}")
 
     model = HDCModel(
         config=config, d=d, n_layers=n_layers, n_heads=n_heads,
@@ -252,6 +264,8 @@ def train(
         ckpt = torch.load(resume_path, map_location=device, weights_only=False)
         model.load_state_dict(ckpt["model_state"])
         optimizer.load_state_dict(ckpt["optimizer_state"])
+        if use_grad_scaler and "scaler_state" in ckpt:
+            scaler.load_state_dict(ckpt["scaler_state"])
         start_step   = ckpt["step"] + 1
         best_val_bpc = ckpt.get("best_val_bpc", float("inf"))
         print(f"  Resumed at step {start_step}, best_val_bpc={best_val_bpc:.4f}")
@@ -302,15 +316,22 @@ def train(
             pg["lr"] = pg["peak_lr"] * lr_scale
 
         optimizer.zero_grad(set_to_none=True)
-        with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=use_amp):
+        with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
             logits, bp = model(x)
             loss_ntp   = F.cross_entropy(logits.view(-1, logits.size(-1)), y.view(-1))
             loss_comp  = (bp.mean() - 1.0 / _unwrap(model).R) ** 2
             loss       = loss_ntp + effective_lambda * loss_comp
 
-        loss.backward()
-        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0).item()
-        optimizer.step()
+        if use_grad_scaler:
+            scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
+            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0).item()
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            loss.backward()
+            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0).item()
+            optimizer.step()
 
         log_loss_accum += loss_ntp.item()
         log_comp_accum += loss_comp.item()
@@ -349,13 +370,13 @@ def train(
             log_loss_accum = log_comp_accum = log_ent_accum = log_count = 0
 
         if (step + 1) % eval_interval == 0:
-            val_loss, val_bpc, val_ratio = evaluate(model, val_loader, device)
+            val_loss, val_bpc, val_ratio = evaluate(model, val_loader, device, amp_dtype=amp_dtype)
             logger.log_eval(step, val_loss)
             logger.print_eval(step, val_loss, val_bpc)
             print(f"  >>> val compression ratio: {val_ratio:.3f} (target {1/(_unwrap(model).R):.3f})")
 
             # Per-position loss breakdown
-            b_bpc, m_bpc = evaluate_per_position(model, val_loader, device, None)
+            b_bpc, m_bpc = evaluate_per_position(model, val_loader, device, None, amp_dtype=amp_dtype)
             print(f"  >>> boundary BPC: {b_bpc:.4f}  mid-chunk BPC: {m_bpc:.4f}  "
                   f"delta: {m_bpc - b_bpc:+.4f}")
             with open(os.path.join(ckpt_dir, f"{config}.jsonl"), "a") as f:
@@ -390,15 +411,18 @@ def train(
                 }, ckpt_path)
                 print(f"  >>> New best! Saved to {ckpt_path}")
 
-            torch.save({
+            ckpt = {
                 "step": step,
                 "model_state": _unwrap(model).state_dict(),
                 "optimizer_state": optimizer.state_dict(),
                 "best_val_bpc": best_val_bpc,
-            }, resume_path)
+            }
+            if use_grad_scaler:
+                ckpt["scaler_state"] = scaler.state_dict()
+            torch.save(ckpt, resume_path)
 
     # Final eval
-    val_loss, val_bpc, _ = evaluate(model, val_loader, device, max_batches=200)
+    val_loss, val_bpc, _ = evaluate(model, val_loader, device, max_batches=200, amp_dtype=amp_dtype)
     elapsed = time.time() - start_time
 
     print(f"\n{'='*60}")

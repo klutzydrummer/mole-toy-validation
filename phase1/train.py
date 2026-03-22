@@ -50,7 +50,7 @@ def _unwrap(model):
 
 
 @torch.no_grad()
-def evaluate(model, val_loader, device, max_batches=50):
+def evaluate(model, val_loader, device, max_batches=50, amp_dtype=torch.bfloat16):
     model.eval()
     total_loss = 0.0
     n_batches = 0
@@ -58,7 +58,7 @@ def evaluate(model, val_loader, device, max_batches=50):
         if n_batches >= max_batches:
             break
         x, y = x.to(device), y.to(device)
-        with torch.autocast(device_type=device.type, dtype=torch.bfloat16,
+        with torch.autocast(device_type=device.type, dtype=amp_dtype,
                             enabled=(device.type == "cuda")):
             logits = model(x)
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), y.view(-1))
@@ -89,9 +89,22 @@ def train(config: str, d: int = 512, n_layers: int = 8, n_heads: int = 8,
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     use_amp = (device.type == "cuda")
 
+    # AMP dtype: bfloat16 on Ampere+ (sm >= 80, native BF16 tensor cores).
+    # Fall back to float16 on older hardware (T4 = sm75) to get native FP16 tensor cores.
+    # GradScaler is only needed for float16 (bfloat16 has FP32-range exponents).
+    amp_dtype = torch.bfloat16
+    if device.type == "cuda":
+        cap = torch.cuda.get_device_capability()
+        if cap[0] < 8:
+            amp_dtype = torch.float16
+    use_grad_scaler = use_amp and (amp_dtype == torch.float16)
+    scaler = torch.cuda.amp.GradScaler(enabled=use_grad_scaler)
+
     if device.type == "cpu":
         print("WARNING: Running on CPU. This will be very slow.")
         print("Switch to GPU in your Lightning.ai Studio settings.\n")
+    else:
+        print(f"AMP dtype: {amp_dtype} | GradScaler: {use_grad_scaler}")
 
     # Model
     model = ToyTransformer(
@@ -129,6 +142,8 @@ def train(config: str, d: int = 512, n_layers: int = 8, n_heads: int = 8,
         ckpt = torch.load(resume_path, map_location=device, weights_only=False)
         model.load_state_dict(ckpt["model_state"])
         optimizer.load_state_dict(ckpt["optimizer_state"])
+        if use_grad_scaler and "scaler_state" in ckpt:
+            scaler.load_state_dict(ckpt["scaler_state"])
         start_step = ckpt["step"] + 1
         best_val_bpc = ckpt.get("best_val_bpc", float("inf"))
         print(f"  Resumed at step {start_step}, best_val_bpc={best_val_bpc:.4f}")
@@ -179,14 +194,20 @@ def train(config: str, d: int = 512, n_layers: int = 8, n_heads: int = 8,
             pg["lr"] = lr
 
         optimizer.zero_grad(set_to_none=True)
-        with torch.autocast(device_type=device.type, dtype=torch.bfloat16,
-                            enabled=use_amp):
+        with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
             logits = model(x)
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), y.view(-1))
 
-        loss.backward()
-        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0).item()
-        optimizer.step()
+        if use_grad_scaler:
+            scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
+            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0).item()
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            loss.backward()
+            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0).item()
+            optimizer.step()
 
         log_loss_accum += loss.item()
         log_count += 1
@@ -202,7 +223,7 @@ def train(config: str, d: int = 512, n_layers: int = 8, n_heads: int = 8,
             log_count = 0
 
         if (step + 1) % eval_interval == 0:
-            val_loss = evaluate(model, val_loader, device)
+            val_loss = evaluate(model, val_loader, device, amp_dtype=amp_dtype)
             val_bpc = logger.log_eval(step, val_loss)
             logger.print_eval(step, val_loss, val_bpc)
             if lit is not None:
@@ -232,15 +253,18 @@ def train(config: str, d: int = 512, n_layers: int = 8, n_heads: int = 8,
                 }, ckpt_path)
                 print(f"  >>> New best! Saved to {ckpt_path}")
 
-            torch.save({
+            ckpt = {
                 "step": step,
                 "model_state": _unwrap(model).state_dict(),
                 "optimizer_state": optimizer.state_dict(),
                 "best_val_bpc": best_val_bpc,
-            }, resume_path)
+            }
+            if use_grad_scaler:
+                ckpt["scaler_state"] = scaler.state_dict()
+            torch.save(ckpt, resume_path)
 
     # Final eval
-    val_loss = evaluate(model, val_loader, device, max_batches=200)
+    val_loss = evaluate(model, val_loader, device, max_batches=200, amp_dtype=amp_dtype)
     val_bpc = ce_to_bpc(val_loss)
     elapsed = time.time() - start_time
 
