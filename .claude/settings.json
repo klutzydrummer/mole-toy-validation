@@ -2,12 +2,8 @@
   "hooks": {
     "PostCompact": [
       {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "echo '## Post-Compaction Context\n\nIMPORTANT: Training runs on a REMOTE environment. This repo has NO live\naccess to training output. The user manually downloads reports and provides\nthem. Do NOT attempt to run training commands or read live metrics locally.\n\nRead STUDY_DESIGN.md and TRAINING_METHODOLOGY.md for current experiment plan.\nBefore any model change: python utils/verify.py check\nVerification workflow: .claude/rules/run-full-verification.md'"
-          }
-        ]
+        "type": "command",
+        "command": "echo '## Post-Compaction Context\n\nIMPORTANT: Training runs on a REMOTE environment. This repo has NO live\naccess to training output. The user manually downloads reports and provides\nthem. Do NOT attempt to run training commands or read live metrics locally.\n\nRead STUDY_DESIGN.md and TRAINING_METHODOLOGY.md for current experiment plan.\nBefore any model change: python utils/verify.py check\nVerification workflow: .claude/rules/run-full-verification.md'"
       }
     ]
   }
