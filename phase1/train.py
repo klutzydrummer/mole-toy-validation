@@ -74,7 +74,7 @@ def train(config: str, d: int = 512, n_layers: int = 8, n_heads: int = 8,
           seq_len: int = 256, batch_size: int = 32, total_steps: int = 100000,
           eval_interval: int = 2500, log_interval: int = 100,
           max_lr: float = 3e-4, ckpt_dir: str = "checkpoints",
-          mhc_dynamic: bool = False, n_experts: int = 8,
+          n_experts: int = 8,
           mol_rank: int = 8, mol_top_k: int = 2, d_ff: int = None,
           resume: bool = False, no_compile: bool = False,
           tokenizer: str = "bpe", dataset: str = "wikitext103",
@@ -121,7 +121,7 @@ def train(config: str, d: int = 512, n_layers: int = 8, n_heads: int = 8,
     model = ToyTransformer(
         config=config, d=d, n_layers=n_layers, n_heads=n_heads,
         vocab_size=vocab_size, max_len=seq_len + 64,
-        mhc_dynamic=mhc_dynamic, n_experts=n_experts,
+        n_experts=n_experts,
         mol_rank=mol_rank, mol_top_k=mol_top_k, d_ff=d_ff,
     ).to(device)
 
@@ -336,7 +336,6 @@ if __name__ == "__main__":
     parser.add_argument("--eval_interval", type=int, default=2500)
     parser.add_argument("--log_interval", type=int, default=100)
     parser.add_argument("--max_lr", type=float, default=3e-4)
-    parser.add_argument("--mhc_dynamic", action="store_true")
     parser.add_argument("--n_experts", type=int, default=8)
     parser.add_argument("--mol_rank", type=int, default=8)
     parser.add_argument("--mol_top_k", type=int, default=2)

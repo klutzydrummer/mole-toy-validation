@@ -177,7 +177,7 @@ class HyperConnection(nn.Module):
         d: model dimension (unused here; kept for API symmetry)
     """
 
-    def __init__(self, n: int, d: int, dynamic: bool = False):
+    def __init__(self, n: int, d: int):
         super().__init__()
         assert n == 4, f"KromHC requires n=4 (got n={n}). Factorization is fixed as 2×2."
         self.n = n
@@ -399,7 +399,7 @@ class TransformerBlock(nn.Module):
     def __init__(self, d: int, n_heads: int, n_streams: int = 1,
                  use_mhc: bool = False, use_mol: bool = False,
                  use_single_lora: bool = False,
-                 mhc_dynamic: bool = False, n_experts: int = 8,
+                 n_experts: int = 8,
                  mol_rank: int = 8, mol_top_k: int = 2,
                  d_ff: int = None,
                  max_len: int = 4096):
@@ -418,7 +418,6 @@ class TransformerBlock(nn.Module):
             self.ffn = SwiGLU(d, d_ff=d_ff)
 
         if use_mhc:
-            # mhc_dynamic is ignored — KromHC is static-only (input-independent H_res).
             self.hc_attn = HyperConnection(n_streams, d)
             self.hc_ffn  = HyperConnection(n_streams, d)
 
@@ -466,7 +465,7 @@ class ToyTransformer(nn.Module):
 
     def __init__(self, config: str = "baseline", d: int = 256, n_layers: int = 8,
                  n_heads: int = 8, vocab_size: int = 256, max_len: int = 2048,
-                 mhc_dynamic: bool = False, n_experts: int = 8,
+                 n_experts: int = 8,
                  mol_rank: int = 8, mol_top_k: int = 2, d_ff: int = None):
         super().__init__()
 
@@ -483,7 +482,7 @@ class ToyTransformer(nn.Module):
                 d=d, n_heads=n_heads, n_streams=self.n_streams,
                 use_mhc=cfg["use_mhc"], use_mol=cfg["use_mol"],
                 use_single_lora=cfg["use_single_lora"],
-                mhc_dynamic=mhc_dynamic, n_experts=n_experts,
+                n_experts=n_experts,
                 mol_rank=mol_rank, mol_top_k=mol_top_k,
                 d_ff=d_ff,
                 max_len=max_len,
