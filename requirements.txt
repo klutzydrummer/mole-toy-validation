@@ -1,7 +1,13 @@
 # Core — these are usually pre-installed on Lightning.ai Studios,
 # but listed here so pip install -r requirements.txt is idempotent.
+#
+# Version constraints below are minimum-tested floors.
+# For reproducibility, pin exact versions by running:
+#   pip freeze | grep -E "torch|numpy|matplotlib|tqdm|sentencepiece|litlogger"
+# on the training environment and replacing >= with ==.
 torch>=2.4.0
 numpy>=1.26.0
 matplotlib>=3.8.0
 tqdm>=4.66.0
+sentencepiece>=0.2.0
 litlogger

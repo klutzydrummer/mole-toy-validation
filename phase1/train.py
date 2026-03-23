@@ -13,10 +13,12 @@ Logs to checkpoints/<config>.jsonl. Saves best + resume checkpoints.
 
 import argparse
 import os
+import random
 import sys
 import time
 import math
 import json
+import numpy as np
 import torch
 import torch.nn.functional as F
 
@@ -76,7 +78,8 @@ def train(config: str, d: int = 512, n_layers: int = 8, n_heads: int = 8,
           mol_rank: int = 8, mol_top_k: int = 2, d_ff: int = None,
           resume: bool = False, no_compile: bool = False,
           tokenizer: str = "bpe", dataset: str = "wikitext103",
-          teamspace: str = "mole-toy-validation-project"):
+          teamspace: str = "mole-toy-validation-project",
+          seed: int = 42):
 
     print(f"\n{'='*60}")
     print(f"Phase 1 Training: config={config}")
@@ -85,6 +88,14 @@ def train(config: str, d: int = 512, n_layers: int = 8, n_heads: int = 8,
     set_dataset(dataset)
     set_tokenizer(tokenizer)
     vocab_size = get_vocab_size()
+
+    # Seed all PRNGs for reproducibility. Must happen before model construction,
+    # DataLoader creation, and any random op. Saved in every checkpoint so that
+    # resumed runs can document what seed produced their results.
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     use_amp = (device.type == "cuda")
@@ -131,11 +142,13 @@ def train(config: str, d: int = 512, n_layers: int = 8, n_heads: int = 8,
         lr=max_lr, betas=(0.9, 0.95), fused=(device.type == "cuda"),
     )
 
-    # Resume
+    # Resume — checkpoint names include seed so multi-seed runs don't overwrite each other.
+    # e.g. baseline_seed42_latest.pt, baseline_seed42_best.pt
     start_step = 0
     best_val_bpc = float("inf")
     os.makedirs(ckpt_dir, exist_ok=True)
-    resume_path = os.path.join(ckpt_dir, f"{config}_latest.pt")
+    ckpt_prefix = f"{config}_seed{seed}"
+    resume_path = os.path.join(ckpt_dir, f"{ckpt_prefix}_latest.pt")
 
     if resume and os.path.exists(resume_path):
         print(f"Resuming from {resume_path}...")
@@ -144,6 +157,12 @@ def train(config: str, d: int = 512, n_layers: int = 8, n_heads: int = 8,
         optimizer.load_state_dict(ckpt["optimizer_state"])
         if use_grad_scaler and "scaler_state" in ckpt:
             scaler.load_state_dict(ckpt["scaler_state"])
+        if "rng_state" in ckpt:
+            torch.set_rng_state(ckpt["rng_state"])
+            if torch.cuda.is_available() and "cuda_rng_state" in ckpt:
+                torch.cuda.set_rng_state(ckpt["cuda_rng_state"])
+            random.setstate(ckpt["python_rng_state"])
+            np.random.set_state(ckpt["numpy_rng_state"])
         start_step = ckpt["step"] + 1
         best_val_bpc = ckpt.get("best_val_bpc", float("inf"))
         print(f"  Resumed at step {start_step}, best_val_bpc={best_val_bpc:.4f}")
@@ -246,10 +265,11 @@ def train(config: str, d: int = 512, n_layers: int = 8, n_heads: int = 8,
 
             if val_bpc < best_val_bpc:
                 best_val_bpc = val_bpc
-                ckpt_path = os.path.join(ckpt_dir, f"{config}_best.pt")
+                ckpt_path = os.path.join(ckpt_dir, f"{ckpt_prefix}_best.pt")
                 torch.save({
                     "step": step, "model_state": _unwrap(model).state_dict(),
                     "val_bpc": val_bpc, "config": config, "n_params": n_params,
+                    "seed": seed,
                 }, ckpt_path)
                 print(f"  >>> New best! Saved to {ckpt_path}")
 
@@ -258,6 +278,11 @@ def train(config: str, d: int = 512, n_layers: int = 8, n_heads: int = 8,
                 "model_state": _unwrap(model).state_dict(),
                 "optimizer_state": optimizer.state_dict(),
                 "best_val_bpc": best_val_bpc,
+                "seed": seed,
+                "rng_state": torch.get_rng_state(),
+                "cuda_rng_state": torch.cuda.get_rng_state() if torch.cuda.is_available() else None,
+                "python_rng_state": random.getstate(),
+                "numpy_rng_state": np.random.get_state(),
             }
             if use_grad_scaler:
                 ckpt["scaler_state"] = scaler.state_dict()
@@ -284,8 +309,9 @@ def train(config: str, d: int = 512, n_layers: int = 8, n_heads: int = 8,
         "d": d, "n_layers": n_layers, "n_heads": n_heads,
         "seq_len": seq_len, "batch_size": batch_size,
         "tokenizer": tokenizer, "dataset": dataset, "vocab_size": vocab_size,
+        "seed": seed,
     }
-    with open(os.path.join(ckpt_dir, f"{config}_summary.json"), "w") as f:
+    with open(os.path.join(ckpt_dir, f"{ckpt_prefix}_summary.json"), "w") as f:
         json.dump(summary, f, indent=2)
 
     if lit is not None:
@@ -319,6 +345,8 @@ if __name__ == "__main__":
                              "Use 1600 for baseline_wide to match mol total params.")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--no_compile", action="store_true")
+    parser.add_argument("--seed", type=int, default=42,
+                        help="Global random seed for reproducibility (torch, cuda, numpy, random).")
     parser.add_argument("--teamspace", type=str, default="mole-toy-validation-project",
                         help="Lightning.ai Teamspace name for experiment tracking")
     args = parser.parse_args()

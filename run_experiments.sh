@@ -71,13 +71,14 @@ fi
 # ── Phase 1 runner ─────────────────────────────────────────────────────────────
 run_phase1() {
     local cfg="$1"
+    local seed="${2:-42}"
     echo ""
     echo "========================================"
-    echo "  Phase 1: $cfg"
+    echo "  Phase 1: $cfg (seed=$seed)"
     echo "========================================"
 
     RESUME_FLAG=""
-    if [ -f "checkpoints/${cfg}_latest.pt" ]; then
+    if [ -f "checkpoints/${cfg}_seed${seed}_latest.pt" ]; then
         echo "  Found checkpoint — resuming."
         RESUME_FLAG="--resume"
     fi
@@ -101,6 +102,7 @@ run_phase1() {
         --seq_len      256 \
         --eval_interval 2500 \
         --log_interval  100 \
+        --seed         "$seed" \
         $EXTRA_FLAGS \
         $RESUME_FLAG
 }
@@ -150,13 +152,14 @@ run_phase2() {
     local cfg="$1"
     local steps="${2:-50000}"
     local mol_ckpt="${3:-}"
+    local seed="${4:-42}"
     echo ""
     echo "========================================"
-    echo "  Phase 2: $cfg"
+    echo "  Phase 2: $cfg (seed=$seed)"
     echo "========================================"
 
     RESUME_FLAG=""
-    if [ -f "checkpoints/${cfg}_latest.pt" ]; then
+    if [ -f "checkpoints/${cfg}_seed${seed}_latest.pt" ]; then
         echo "  Found checkpoint — resuming."
         RESUME_FLAG="--resume"
     fi
@@ -181,6 +184,7 @@ run_phase2() {
         --seq_len      256 \
         --eval_interval 2500 \
         --log_interval  100 \
+        --seed         "$seed" \
         $MOL_FLAG \
         $RESUME_FLAG
 }

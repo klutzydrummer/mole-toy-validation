@@ -149,9 +149,10 @@ Source: "How to set AdamW's weight decay as you scale" — arXiv:2405.13698
 - Training "just works" with `torch.amp.autocast('cuda', dtype=torch.bfloat16)`
 
 **float16 pitfalls** for this codebase specifically:
-- `sigmoid(7.5)` rounds to exactly 1.0 in float16 (float16 max representable < 1 is
-  0.9990), making `1 - a_t² = 0` and nullifying the `CausalRecurrenceLayer` sqrt
-  normalization. Already guarded by computing sigmoid in float32 in the current code,
+- `sigmoid(7.5)` = 0.99944, which rounds to 0.99951 in float16 (float16 max representable
+  < 1.0 is 0.99951, not 0.9990). This value is still < 1.0, so `1 - a_t²` is not exactly
+  zero — but it is very small (~0.001), making the `CausalRecurrenceLayer` sqrt normalization
+  negligible in practice. Already guarded by computing sigmoid in float32 in the current code,
   but this guard would not be needed with bfloat16.
 - Gradient overflow (activations >65504) triggers loss spikes hard to distinguish from
   architectural instability.

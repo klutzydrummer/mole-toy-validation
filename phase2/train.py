@@ -25,9 +25,11 @@ import argparse
 import json
 import math
 import os
+import random
 import sys
 import time
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 
@@ -169,7 +171,7 @@ def train(
     n_heads:        int   = 8,
     seq_len:        int   = 256,
     batch_size:     int   = 32,
-    total_steps:    int   = 100000,
+    total_steps:    int   = 50000,
     eval_interval:  int   = 2500,
     log_interval:   int   = 100,
     max_lr:         float = 3e-4,
@@ -185,6 +187,7 @@ def train(
     teamspace:      str   = "mole-toy-validation-project",
     tokenizer:      str   = "bpe",
     dataset:        str   = "wikitext103",
+    seed:           int   = 42,
 ):
     print(f"\n{'='*60}")
     print(f"Phase 2 Training: config={config}")
@@ -193,6 +196,14 @@ def train(
     set_dataset(dataset)
     set_tokenizer(tokenizer)
     vocab_size = get_vocab_size()
+
+    # Seed all PRNGs for reproducibility. Must happen before model construction,
+    # DataLoader creation, and any random op. Saved in every checkpoint so that
+    # resumed runs can document what seed produced their results.
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
 
     device  = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     use_amp = device.type == "cuda"
@@ -255,7 +266,8 @@ def train(
     )
 
     os.makedirs(ckpt_dir, exist_ok=True)
-    resume_path = os.path.join(ckpt_dir, f"{config}_latest.pt")
+    ckpt_prefix  = f"{config}_seed{seed}"
+    resume_path  = os.path.join(ckpt_dir, f"{ckpt_prefix}_latest.pt")
     start_step   = 0
     best_val_bpc = float("inf")
 
@@ -266,6 +278,12 @@ def train(
         optimizer.load_state_dict(ckpt["optimizer_state"])
         if use_grad_scaler and "scaler_state" in ckpt:
             scaler.load_state_dict(ckpt["scaler_state"])
+        if "rng_state" in ckpt:
+            torch.set_rng_state(ckpt["rng_state"])
+            if torch.cuda.is_available() and "cuda_rng_state" in ckpt:
+                torch.cuda.set_rng_state(ckpt["cuda_rng_state"])
+            random.setstate(ckpt["python_rng_state"])
+            np.random.set_state(ckpt["numpy_rng_state"])
         start_step   = ckpt["step"] + 1
         best_val_bpc = ckpt.get("best_val_bpc", float("inf"))
         print(f"  Resumed at step {start_step}, best_val_bpc={best_val_bpc:.4f}")
@@ -404,10 +422,11 @@ def train(
 
             if val_bpc < best_val_bpc:
                 best_val_bpc = val_bpc
-                ckpt_path = os.path.join(ckpt_dir, f"{config}_best.pt")
+                ckpt_path = os.path.join(ckpt_dir, f"{ckpt_prefix}_best.pt")
                 torch.save({
                     "step": step, "model_state": _unwrap(model).state_dict(),
                     "val_bpc": val_bpc, "config": config, "n_params": n_params,
+                    "seed": seed,
                 }, ckpt_path)
                 print(f"  >>> New best! Saved to {ckpt_path}")
 
@@ -416,6 +435,11 @@ def train(
                 "model_state": _unwrap(model).state_dict(),
                 "optimizer_state": optimizer.state_dict(),
                 "best_val_bpc": best_val_bpc,
+                "seed": seed,
+                "rng_state": torch.get_rng_state(),
+                "cuda_rng_state": torch.cuda.get_rng_state() if torch.cuda.is_available() else None,
+                "python_rng_state": random.getstate(),
+                "numpy_rng_state": np.random.get_state(),
             }
             if use_grad_scaler:
                 ckpt["scaler_state"] = scaler.state_dict()
@@ -442,8 +466,9 @@ def train(
         "seq_len": seq_len, "batch_size": batch_size,
         "R": _unwrap(model).R, "lambda_comp": effective_lambda,
         "tokenizer": tokenizer, "dataset": dataset, "vocab_size": vocab_size,
+        "seed": seed,
     }
-    with open(os.path.join(ckpt_dir, f"{config}_summary.json"), "w") as f:
+    with open(os.path.join(ckpt_dir, f"{ckpt_prefix}_summary.json"), "w") as f:
         json.dump(summary, f, indent=2)
 
     if lit is not None:
@@ -464,7 +489,7 @@ if __name__ == "__main__":
     parser.add_argument("--tokenizer",      type=str,   default="bpe", choices=["char", "bpe"])
     parser.add_argument("--dataset",        type=str,   default="wikitext103", choices=["wikitext103", "enwik8"])
     parser.add_argument("--batch_size",     type=int,   default=32)
-    parser.add_argument("--total_steps",    type=int,   default=100000)
+    parser.add_argument("--total_steps",    type=int,   default=50000)
     parser.add_argument("--eval_interval",  type=int,   default=2500)
     parser.add_argument("--log_interval",   type=int,   default=100)
     parser.add_argument("--max_lr",         type=float, default=3e-4)
@@ -479,6 +504,8 @@ if __name__ == "__main__":
     parser.add_argument("--mol_top_k",      type=int,   default=2)
     parser.add_argument("--resume",         action="store_true")
     parser.add_argument("--no_compile",     action="store_true")
+    parser.add_argument("--seed",           type=int,   default=42,
+                        help="Global random seed for reproducibility (torch, cuda, numpy, random).")
     parser.add_argument("--ckpt_dir",       type=str,   default="checkpoints")
     parser.add_argument("--teamspace",      type=str,   default="mole-toy-validation-project")
     args = parser.parse_args()

@@ -290,6 +290,6 @@ used 0.001 — scaled up for toy experiments (noted in source comment at line 27
 
 10. **Shared adapter always active**: Confirm `self.shared_gate(x)`, `self.shared_up(x)`, `self.shared_down(hidden)` are added unconditionally (lines 290–292, 302) regardless of routing outcome.
 
-11. **Expert weight zero-sum check**: After training for at least 100 steps, run `model.get_load_stats()` (line 321) and verify `expert_balance` > 0.7 (entropy ratio), confirming load balancing is functioning.
+11. **Expert weight zero-sum check**: After training for at least 100 steps, run `model.get_mol_stats()` (line 321) and verify `expert_balance` > 0.7 (entropy ratio), confirming load balancing is functioning.
 
 12. **No bias in router linear**: Confirm `self.router = nn.Linear(d, n_experts, bias=False)` at line 267. Router bias is handled separately via `expert_bias` buffer, not baked into the linear layer.

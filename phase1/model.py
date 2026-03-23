@@ -4,7 +4,7 @@ Phase 1 Model: Character-level transformer with optional mHC and MoL.
 Configurations:
   baseline  - Vanilla transformer (SwiGLU FFN, RMSNorm, RoPE)
   mhc       - + manifold-constrained hyper-connections (n=2 streams)
-  mol       - + mixture-of-LoRAs FFN (8 experts, top-2, rank 4)
+  mol       - + mixture-of-LoRAs FFN (8 experts, top-2, rank 8)
   compose   - mHC + MoL together
 
 Reference implementations consulted:
@@ -272,7 +272,7 @@ class MoLFFN(nn.Module):
     """
 
     def __init__(self, d: int, n_experts: int = 8, top_k: int = 2,
-                 rank: int = 4, d_ff: int = None):
+                 rank: int = 8, d_ff: int = None):
         super().__init__()
         if d_ff is None:
             d_ff = int(d * 8 / 3)
@@ -380,7 +380,7 @@ class TransformerBlock(nn.Module):
                  use_mhc: bool = False, use_mol: bool = False,
                  use_single_lora: bool = False,
                  mhc_dynamic: bool = False, n_experts: int = 8,
-                 mol_rank: int = 4, mol_top_k: int = 2,
+                 mol_rank: int = 8, mol_top_k: int = 2,
                  d_ff: int = None,
                  max_len: int = 4096):
         super().__init__()
@@ -446,7 +446,7 @@ class ToyTransformer(nn.Module):
     def __init__(self, config: str = "baseline", d: int = 256, n_layers: int = 8,
                  n_heads: int = 8, vocab_size: int = 256, max_len: int = 2048,
                  mhc_dynamic: bool = False, n_experts: int = 8,
-                 mol_rank: int = 4, mol_top_k: int = 2, d_ff: int = None):
+                 mol_rank: int = 8, mol_top_k: int = 2, d_ff: int = None):
         super().__init__()
 
         cfg = self.CONFIGS[config]

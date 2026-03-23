@@ -18,7 +18,7 @@ Three Phase 1/2 results motivate scaling:
 
 | Phase 1/2 finding | What Phase 3 tests |
 |-------------------|--------------------|
-| mHC *lost* to baseline at 28M (3.5643 vs 3.5582) | Does mHC work at 1B with n=4 and exact doubly stochastic constraint? |
+| mHC *lost* to baseline at 28M (3.5736 vs 3.5875 baseline) | Does mHC work at 1B with n=4 and exact doubly stochastic constraint? |
 | MoL *beat* baseline at 28M (margin TBD) | Does the routing advantage widen or narrow at scale? |
 | HDC pipeline validated; compute budget concern (14–27 tokens/param) | Does HDC improve BPC at proper Chinchilla-adjacent scale? |
 
@@ -141,12 +141,16 @@ This is a pre-condition for Phase 3 execution.
 
 ## 5. Hardware Requirements
 
-| Hardware | Tokens/s (est.) | Time per 10B-token run | Verdict |
+| Hardware | Tokens/s (est.) | Time per 5B-token run | Verdict |
 |----------|----------------|----------------------|---------|
-| Single T4 (16GB) | ~1,200 | ~97 days | **Infeasible** |
-| Single A100 40GB | ~50,000 | ~56 hours | ✓ Minimum viable |
-| Single A100 80GB | ~60,000 | ~46 hours | ✓ Preferred |
-| Single H100 80GB | ~150,000 | ~19 hours | ✓ Ideal |
+| Single T4 (16GB) | ~600 | ~97 days | **Infeasible** |
+| Single A100 40GB | ~12,000 | ~120 hours | ✓ Minimum viable |
+| Single A100 80GB | ~15,000 | ~93 hours | ✓ Preferred |
+| Single H100 80GB | ~35,000 | ~40 hours | ✓ Ideal |
+
+Note: throughput estimates assume seq_len=1024, batch=32, BF16, gradient checkpointing enabled.
+Peak hardware FLOP/s is not achievable in practice; ~40–50% MFU is typical for well-tuned
+single-GPU training. T4 is excluded from Phase 3 regardless of token budget.
 
 A single A100 is the minimum viable hardware. All Phase 3 estimates below assume A100 40GB.
 
@@ -268,18 +272,27 @@ stable), so 3 seeds should be sufficient to resolve meaningful differences.
 
 | Config | Seeds | Steps | Est. time/run | Total A100 hours |
 |--------|-------|-------|--------------|-----------------|
-| LR sweep (baseline_1b × 3 LRs) | 1 | 50k | ~3 hrs | 9 hrs |
-| `baseline_1b` | 3 | 500k | ~28 hrs | 84 hrs |
-| `baseline_wide_1b` | 3 | 500k | ~28 hrs | 84 hrs |
-| `mol_1b` | 3 | 500k | ~30 hrs | 90 hrs |
-| `mhc_lite_1b` | 3 | 500k | ~30 hrs | 90 hrs |
-| `compose_1b` (conditional) | 3 | 500k | ~32 hrs | 96 hrs |
-| `hdc_1b` (conditional) | 1 | 500k | ~35 hrs | 35 hrs |
-| **Total (without conditionals)** | | | | **~357 hrs** |
-| **Total (with all conditionals)** | | | | **~488 hrs** |
+| LR sweep (baseline_1b × 3 LRs) | 1 | 50k | ~24 hrs | 72 hrs |
+| `baseline_1b` | 3 | 500k | ~120 hrs | 360 hrs |
+| `baseline_wide_1b` | 3 | 500k | ~120 hrs | 360 hrs |
+| `mol_1b` | 3 | 500k | ~125 hrs | 375 hrs |
+| `mhc_lite_1b` | 3 | 500k | ~125 hrs | 375 hrs |
+| `compose_1b` (conditional) | 3 | 500k | ~130 hrs | 390 hrs |
+| `hdc_1b` (conditional) | 1 | 500k | ~140 hrs | 140 hrs |
+| **Total (without conditionals)** | | | | **~1,542 hrs** |
+| **Total (with all conditionals)** | | | | **~2,072 hrs** |
 
-At A100 cloud pricing (~$2–4/hr), unconditional runs: **~$700–1,400**.
-With all conditionals: **~$1,000–2,000**.
+At A100 cloud pricing (~$2–4/hr), unconditional runs: **~$3,100–6,200**.
+With all conditionals: **~$4,100–8,300**.
+
+**TPU v3-8 equivalent** (for TRC grant estimates): TPU v3-8 runs at approximately 3–4×
+A100 throughput on standard transformer workloads. A100 hours ÷ 3.5 ≈ TPU v3-8 hours.
+Unconditional runs: ~430 TPU v3-8 hours. One 30-day TRC block (~720 hrs) covers the
+full study with margin for debugging.
+
+Note: these estimates are based on OLMo-1B and mHC-lite paper training benchmarks at
+comparable configurations. Actual throughput depends on implementation efficiency;
+treat as central estimates with ±30% uncertainty.
 
 Note: estimates assume FineWeb 10BT (500k steps). OpenWebText at 20B tokens ≈ 2.4× more
 steps and cost.
