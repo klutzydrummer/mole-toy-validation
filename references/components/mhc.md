@@ -154,36 +154,39 @@ residuals = self.depth_residual_fn(output, residuals)
 
 | Symbol | Location |
 |--------|----------|
-| `sinkhorn_log` | line 114 |
-| `HyperConnection.__init__` | line 146 |
-| `HyperConnection.forward` | line 175 |
-| `TransformerBlock._forward_mhc` | line 376 |
-| Stream expansion (embed → [B,L,n,d]) | line 456 |
-| Stream collapse (learned weighted sum) | lines 461–463 |
+| `KromHCResidual` | replaces `sinkhorn_log` |
+| `HyperConnection.__init__` | uses `KromHCResidual` for H_res |
+| `HyperConnection.forward` | unchanged structure |
+| `TransformerBlock._forward_mhc` | unchanged |
+| Stream expansion (embed → [B,L,n,d]) | unchanged |
+| Stream collapse (learned weighted sum) | unchanged |
 
-### Intentional deviations from the paper (matching reference code)
+**Note:** Line numbers shift when the model is edited. Use `grep -n "class KromHCResidual"` etc. to locate current positions.
+
+### Intentional deviations from the paper (matching reference code or later papers)
 
 1. **softmax instead of sigmoid for H_pre / H_post.**
    Paper Eq. 8 uses `σ(H̃^pre)` and `2σ(H̃^post)`. The reference code and our implementation
    use `F.softmax(dim=-1)` for both. Softmax enforces Σ = 1 and non-negativity; sigmoid does
-   not enforce Σ = 1. Our code comment at line 201 explicitly notes this matches
-   `tokenbender/mHC`.
+   not enforce Σ = 1.
 
 2. **H_pre / H_post are 1-D vectors (shape `[n]`), not matrices.**
    The paper uses `H^pre ∈ ℝ^(1×n)` and `H^post ∈ ℝ^(1×n)` for a single-view case
    (`num_input_views=1`). Our `HyperConnection` always uses single-view, so these are stored
    as `[n]` tensors. Functionally equivalent.
 
-3. **Log-space Sinkhorn with τ=0.05, n_iters=10.**
-   Paper Eq. 9 describes standard (exp + normalize) Sinkhorn with t_max=20. Reference code
-   and our implementation use numerically stable log-space Sinkhorn (matching the reference
-   code exactly) with τ=0.05 and 10 iterations.
+3. **KromHC (arXiv:2601.21579) replaces Sinkhorn-Knopp for H_res.**
+   Paper Eq. 9 uses iterative SK (t_max=20). mHC-lite (arXiv:2601.05732) and KromHC both
+   demonstrate that SK leaves up to 100% column-sum deviation per layer. Our implementation
+   uses **KromHC** with n=4=2×2 Kronecker factorization:
+   - Two 2×2 factor matrices: `U_k = a_k·I + (1-a_k)·Swap`, `a_k = softmax(logits)[0]`
+   - `H_res = U1 ⊗ U2` via `torch.kron` — exactly doubly stochastic by Theorem 4.2
+   - Initialization: `factor_logits = [0, -8]` → `a≈1` → `U≈I` → `H_res ≈ I_4`
+   - No iterations, no approximation error
 
-4. **Dynamic variant (DHC) adds an input-conditional H_res.**
-   When `dynamic=True` (line 157–159), `H_res` is computed per-token from a linear projection
-   of the mean-pooled stream state plus a learned bias initialized near-identity. This is an
-   extension beyond the static mHC in the paper; it is controlled by `mhc_dynamic` config
-   flag and defaults to `False`.
+4. **Dynamic variant (DHC) removed.**
+   The original implementation supported `dynamic=True` (input-conditional H_res via Sinkhorn).
+   KromHC is static-only. The `mhc_dynamic` CLI flag is accepted but ignored.
 
 5. **Stream collapse uses learned softmax weights, not a fixed operation.**
    After all blocks, streams are collapsed via:
@@ -191,12 +194,14 @@ residuals = self.depth_residual_fn(output, residuals)
    w = F.softmax(self.stream_collapse_logits, dim=0)
    h = torch.einsum("blnd, n -> bld", h, w)
    ```
-   (lines 462–463). `stream_collapse_logits` is initialized to zeros (uniform at start).
+   `stream_collapse_logits` is initialized to zeros (uniform at start).
    The paper does not specify a collapse operation; this is our design choice.
 
-6. **n_streams=2 in toy configs.**
-   Paper experiments use n=4. We use n=2 for parameter-budget reasons at the 5M toy scale.
-   The math is identical; only the expansion factor differs.
+6. **n_streams=4 (paper's validated default).**
+   Original Phase 1 used n=2 (below validated minimum). Re-run uses n=4, matching:
+   - The original HC paper's validated default (OLMo-1B-DHC with n=4)
+   - The KromHC paper's experimental configuration (n=4=2×2)
+   - The Phase 3 target configuration
 
 ---
 

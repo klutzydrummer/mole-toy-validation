@@ -13,7 +13,8 @@ Base config: `d=512, n_layers=8, n_heads=8, SwiGLU, RoPE, RMSNorm, weight-tying`
 |--------|-------------|--------|-------|------|--------|
 | compose | 3.5316 | 31.1M | 100k | N/A (pre-seed-control) | complete |
 | mol | 3.5702 | 31.1M | 100k | N/A (pre-seed-control) | complete |
-| mhc | 3.5736 | 27.8M | 100k | N/A (pre-seed-control) | complete |
+| mhc (original, n=2, SK) | 3.5736 | 27.8M | 100k | N/A (pre-seed-control) | complete |
+| mhc (rerun, n=4, KromHC) | TBD | ~29M | 100k | — | pending |
 | baseline | 3.5875 | 27.8M | 100k | N/A (pre-seed-control) | complete |
 | baseline_wide | TBD | ~31.1M | 100k | — | pending |
 | mol_single | TBD | ~31.1M | 100k | — | pending |

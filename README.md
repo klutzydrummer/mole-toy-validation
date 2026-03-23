@@ -45,11 +45,11 @@ Dataset: WikiText-103-raw (CC-BY-SA 3.0, derived from Wikipedia), BPE tokenizer 
 
 **baseline** — Vanilla transformer. Control.
 
-**mhc** — Adds n=2 manifold-constrained hyper-connection streams (arXiv:2512.24880).
-Each sublayer uses `x = H_res · x + H_post^T · F(H_pre · x)`. H_res is constrained to
-the Birkhoff polytope via log-space Sinkhorn-Knopp (τ=0.05, 10 iterations).
-*Result*: lost to baseline at 28M — consistent with HC gains being a scale phenomenon
-(no published results below 1B). Diagnosed in `references/components/mhc.md`.
+**mhc** — Adds n=4 hyper-connection streams (arXiv:2512.24880) with **KromHC** exact
+doubly stochastic H_res (arXiv:2601.21579). Each sublayer: `x = H_res · x + H_post^T · F(H_pre · x)`.
+H_res is computed via Kronecker-product factorization (two 2×2 factors, `U1 ⊗ U2`) —
+exactly doubly stochastic with no Sinkhorn iterations. Phase 1 original run used n=2 and
+approximate SK; this re-run fixes both. See `references/components/mhc.md`.
 
 **mol** — Replaces the SwiGLU FFN with Mixture-of-LoRAs routing (arXiv:2412.19437 §3).
 8 rank-8 LoRA experts, top-2 sigmoid routing. Routing bias used for selection only
