@@ -15,8 +15,14 @@ flow.
   DeepSeek, arXiv:2512.24880, December 2025
 - **Code:** `sources/code/mhc_hyper_connections.py` — author reference implementation from
   `tokenbender/mHC-manifold-constrained-hyper-connections` (GitHub)
-- **Related:** arXiv:2601.05732 ("mHC-lite: You Don't Need 20 Sinkhorn-Knopp Iterations"),
-  cited in the code header, supporting `num_iters=10` as sufficient
+- **Follow-up:** `sources/papers/mhc_lite_2601.05732.md` — "mHC-lite: You Don't Need 20
+  Sinkhorn-Knopp Iterations", arXiv:2601.05732, January 2026. Demonstrates mHC's SK approximation
+  gap and proposes Birkhoff-von Neumann exact construction. Key finding: mHC column sums deviate
+  from 1.0 by up to 100% per-layer in 24-layer networks; mHC can still exhibit instability.
+- **Follow-up:** `sources/papers/kromhc_2601.21579.md` — "KromHC: Manifold-Constrained
+  Hyper-Connections with Kronecker-Product Residual Matrices", arXiv:2601.21579, January 2026.
+  Achieves exact doubly stochasticity at O(n²C) parameter complexity via Kronecker factorization.
+  Best downstream accuracy and lowest gradient norms among all HC variants.
 
 ---
 
@@ -191,6 +197,80 @@ residuals = self.depth_residual_fn(output, residuals)
 6. **n_streams=2 in toy configs.**
    Paper experiments use n=4. We use n=2 for parameter-budget reasons at the 5M toy scale.
    The math is identical; only the expansion factor differs.
+
+---
+
+## Scale limitations and known failure modes
+
+### No published results below 1B parameters
+
+The original HC paper (ByteDance, arXiv:2409.19606) and the mHC paper both report
+experiments at 1B parameters minimum. The smallest HC result is OLMo-1B-DHC with n=4.
+**No sub-1B results exist in any of the three mHC-family papers.** Behavior at ~28M params
+is extrapolation. The Phase 1 result (mHC: 3.5643 vs baseline: 3.5582) — mHC losing to
+baseline — is consistent with HC gains being primarily a depth/scale phenomenon.
+
+### n=2 is below the validated minimum
+
+The original HC paper found **n=1 hurts vs baseline** and validates n=4 as the recommended
+default. n=2 (used in this project for parameter-budget reasons) is the floor of potentially
+helpful territory but is untested in the literature. At n=2, stream divergence is limited —
+H_post can only route between two streams, giving less gradient diversity than n=4.
+
+### The Sinkhorn approximation gap (from mHC-lite, arXiv:2601.05732)
+
+mHC-lite demonstrates that 10–20 fixed SK iterations do not guarantee exact doubly
+stochasticity. In 24-layer networks, column sums deviate from 1.0 by up to 100% per-layer,
+and the composite product deviates up to 220%. At 8 layers the compounding is ~1/3 as
+severe, but the constraint violation is still present.
+
+**This is the most likely explanation for the rising grad norm observed in Phase 1 mHC
+training (gnorm: 0.77 early → 1.395 at step 100k).** The doubly stochastic constraint is
+not being fully enforced, allowing H_res to drift and spectral norm to slowly exceed 1.0.
+
+### The rising grad norm pattern
+
+Rising grad norm in mHC (vs. flat grad norm in baseline) is consistent with the HC
+instability described in arXiv:2512.24880 Section 3.1: unconstrained or imperfectly
+constrained H_res matrices compound across layers. At 8 layers with 10 SK iterations
+the effect is slow rather than catastrophic (no loss surge), but it accumulates over 100k
+steps.
+
+---
+
+## Follow-up work
+
+### mHC-lite (arXiv:2601.05732, January 2026)
+
+Replaces iterative SK with exact Birkhoff-von Neumann construction:
+
+    H_l^{res} = Σ_{k=1}^{n!} a_{l,k} P_k,   a_l = softmax(α · x̂ · W + b)
+
+Exactly doubly stochastic by construction. Native PyTorch (no custom kernels).
+Outperforms mHC on val loss (3.185 vs 3.204) and throughput (+2% vs -6.7%).
+
+**Critical limitation:** parameter count scales as O(nC · n!). Practical only for n ≤ 4–5.
+
+**For n=2 (this project's n_streams=2):** mHC-lite is trivially exact. Only 2! = 2
+permutation matrices exist (identity I and swap Swap):
+
+    H_l^{res} = a · I + (1-a) · Swap,   a = softmax([logit_0, logit_1])[0]
+
+A single scalar a ∈ (0, 1) parameterizes the full Birkhoff polytope at n=2.
+Implementation cost: negligible. If re-running mHC, this is the correct H_res for n=2.
+
+### KromHC (arXiv:2601.21579, January 2026)
+
+Kronecker-product factorization: decomposes n×n H_res into smaller factor matrices
+whose Kronecker product is exactly doubly stochastic (Theorem 4.2).
+
+    H_l^{res} = U_l^1 ⊗ U_l^2,   each U_l^k constructed via B-vN on smaller dimension
+
+Parameter complexity: O(n²C) — 48% fewer params than mHC, 61% fewer than mHC-lite at n=4.
+Practical for large n (n=16 adds only 11.37M params vs mHC-lite's intractable n!).
+Achieves best downstream accuracy and lowest gradient norms among all HC variants.
+
+**Requirement:** n must be composite (n=4=2×2 ✓, n=6 ✓, n=8 ✓; n=5 prime ✗).
 
 ---
 
