@@ -12,12 +12,13 @@ Logs to checkpoints/<config>.jsonl. Saves best + resume checkpoints.
 """
 
 import argparse
+import json
+import math
 import os
 import random
 import sys
 import time
-import math
-import json
+
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -25,8 +26,8 @@ import torch.nn.functional as F
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from phase1.model import ToyTransformer
-from utils.data import get_dataloader, set_dataset, set_tokenizer, get_vocab_size
-from utils.metrics import ce_to_bpc, TrainLogger, ParamCounter
+from utils.data import get_dataloader, get_vocab_size, set_dataset, set_tokenizer
+from utils.metrics import ParamCounter, TrainLogger, ce_to_bpc
 
 # LightningLogger is only available inside Lightning.ai Studios — degrade gracefully elsewhere.
 try:

@@ -34,7 +34,6 @@ Usage:
 import argparse
 import json
 import math
-import os
 import subprocess
 import sys
 import time
@@ -111,7 +110,7 @@ def run_smoke_test(steps: int = 1000, batch_size: int = 32) -> dict:
     """
     sys.path.insert(0, str(REPO_ROOT))
     from phase2.model import HDCModel
-    from utils.data import get_dataloader, set_dataset, set_tokenizer, get_vocab_size
+    from utils.data import get_dataloader, get_vocab_size, set_dataset, set_tokenizer
 
     set_dataset("wikitext103")
     set_tokenizer("bpe")

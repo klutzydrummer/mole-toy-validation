@@ -332,7 +332,6 @@ def key_findings(analyses):
     compose  = next((a for a in analyses if a["config"] == "compose"),  None)
 
     p1_complete = [a for a in complete if a["phase"] == 1]
-    p2_complete = [a for a in complete if a["phase"] == 2]
 
     # Overall winner
     winner = ranked[0]
@@ -375,7 +374,6 @@ def key_findings(analyses):
     # Phase 2: A1 gate result
     hdc_ruled = next((a for a in analyses if a["config"] == "hdc_rulebased"), None)
     hdc_gate  = next((a for a in analyses if a["config"] == "hdc_gate"),      None)
-    hdc_stride = next((a for a in analyses if a["config"] == "hdc_stride"),   None)
     if mol and hdc_ruled and hdc_ruled["best_val_bpc"] and mol["best_val_bpc"]:
         delta = mol["best_val_bpc"] - hdc_ruled["best_val_bpc"]
         if delta > 0.001:

@@ -30,7 +30,6 @@ If no files are given to `check` or `update`, all TRACKED_FILES are used.
 
 import argparse
 import json
-import os
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -207,7 +206,7 @@ def cmd_update(args) -> int:
     save_record(data)
 
     if updated:
-        print(f"Updated last_verified.json:")
+        print("Updated last_verified.json:")
         for f in updated:
             print(f"  {f}  result={args.result}  verified_at={now}")
     if skipped:

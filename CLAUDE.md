@@ -18,6 +18,19 @@ Read every affected file completely before making any change. Fix root causes â€
 
 ---
 
+## Code quality
+
+Ruff is configured in `pyproject.toml`. Run before committing any Python change:
+
+```bash
+ruff check .          # lint (F/E/W/I/UP rules, excludes references/sources/code/)
+ruff check . --fix    # auto-fix safe violations (unused imports, import order)
+```
+
+Install locally: `pip install -r requirements-dev.txt`
+
+---
+
 ## Commands
 
 ```bash

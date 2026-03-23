@@ -1,0 +1,21 @@
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+# Exclude verbatim reference implementations — these are source material, not our code.
+exclude = [
+    "references/sources/code/",
+]
+
+[tool.ruff.lint]
+# F = Pyflakes (unused imports, undefined names, unused variables)
+# E/W = pycodestyle (style errors and warnings)
+# I = isort (import ordering)
+# UP = pyupgrade (modern Python syntax)
+select = ["E", "W", "F", "I", "UP"]
+
+ignore = [
+    # Line length — enforced at 100 chars by line-length above, but E501 is noisy
+    # in research code where logging strings and tensor expressions can run long.
+    "E501",
+]

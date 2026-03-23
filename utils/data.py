@@ -14,9 +14,10 @@ Tokenizer models and split arrays are cached in data/ on first use.
 
 import os
 import sys
+
 import numpy as np
 import torch
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import DataLoader, Dataset
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
 ENWIK8_PATH = os.path.join(DATA_DIR, "enwik8")

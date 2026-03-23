@@ -13,7 +13,6 @@ import argparse
 import json
 import os
 import sys
-import time
 
 try:
     from litlogger import LightningLogger

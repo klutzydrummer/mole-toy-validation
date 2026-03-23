@@ -36,8 +36,8 @@ import torch.nn.functional as F
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from phase2.model import HDCModel
-from utils.data import get_dataloader, set_dataset, set_tokenizer, get_vocab_size
-from utils.metrics import ce_to_bpc, TrainLogger, ParamCounter
+from utils.data import get_dataloader, get_vocab_size, set_dataset, set_tokenizer
+from utils.metrics import ParamCounter, TrainLogger, ce_to_bpc
 
 try:
     from litlogger import LightningLogger as _LightningLogger
