@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 CKPT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "checkpoints")
 REPORT_PATH = os.path.join(CKPT_DIR, "report.md")
 
-PHASE1_CONFIGS  = ["baseline", "mhc", "mol", "compose"]
+PHASE1_CONFIGS  = ["baseline", "baseline_wide", "mhc", "mol", "mol_single", "compose"]
 PHASE2_CONFIGS  = [
     "hdc_rulebased", "hdc_gate", "hdc_stride", "hdc_r2", "hdc_r8",
     "hdc_e2e_isolated", "hdc_upcycle_stride", "hdc_upcycle_gate",
@@ -321,8 +321,10 @@ STATUS_ICON = {
 _CONFIG_HYPOTHESIS = {
     # Phase 1
     "baseline":         (None,           "Control. Vanilla transformer. Target ~3.5–3.6 BPC at 100k steps."),
+    "baseline_wide":    ("baseline",     "Param-matched control (d_ff=1600, ~31.1M). Should match mol params; any gap vs mol is attributable to MoL routing, not capacity."),
     "mhc":              ("baseline",     "Should beat baseline: mHC multi-stream residual adds representational diversity."),
     "mol":              ("baseline",     "Should beat baseline: MoL sparse experts add capacity without proportional cost."),
+    "mol_single":       ("mol",          "Capacity-matched single-LoRA (mol_rank=64). Should lose to mol: tests whether routing gains outweigh rank concentration."),
     "compose":          ("mol",          "Should beat mol: additive gains if mHC and MoL are orthogonal."),
     # Phase 2 — all compared against mol (best Phase 1 config, inner network for HDC)
     "hdc_rulebased":    ("mol",          "Pipeline validation. Rule-based cosine routing. Should match or beat mol if HDC helps at all."),
