@@ -18,16 +18,21 @@ Read every affected file completely before making any change. Fix root causes �
 
 ---
 
-## Code quality
+## Local pre-push checks — run these before every `git push`
 
-Ruff is configured in `pyproject.toml`. Run before committing any Python change:
+**IMPORTANT: Python is not in the local shell PATH. Use `nix-shell` to enter the dev environment.**
 
 ```bash
-ruff check .          # lint (F/E/W/I/UP rules, excludes references/sources/code/)
-ruff check . --fix    # auto-fix safe violations (unused imports, import order)
+nix-shell --run "python utils/shape_check.py"   # tensor shape validation (Phase 1 + 2)
+nix-shell --run "ruff check ."                  # lint
 ```
 
-Install locally: `pip install -r requirements-dev.txt`
+`shell.nix` provides CPU-only torch + torchinfo + ruff. A single forward pass at full production dims (d=512, seq=256, batch=1) costs ~200 MB RAM — safe to run locally.
+
+`shape_check.py` validates:
+- Output shape contracts for all 12 non-upcycle configs (6 Phase 1 + 6 Phase 2)
+- No NaN/Inf in logits
+- boundary_probs in [0, 1] for all Phase 2 configs
 
 ---
 
