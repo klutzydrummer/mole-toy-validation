@@ -9,6 +9,7 @@ Usage:
 """
 
 import argparse
+import glob as _glob
 import json
 import math
 import os
@@ -37,9 +38,25 @@ _UPCYCLE_CONFIGS = {"hdc_upcycle_stride", "hdc_upcycle_gate"}
 
 # ── data loading ─────────────────────────────────────────────────────────────
 
+def find_jsonl(config):
+    """Return (path, seed) for the JSONL file for this config, or (None, None)."""
+    matches = _glob.glob(os.path.join(CKPT_DIR, f"{config}_seed*.jsonl"))
+    if not matches:
+        return None, None
+    # If multiple seeds exist, sort and take the first (lowest seed number)
+    matches.sort()
+    path = matches[0]
+    name = os.path.splitext(os.path.basename(path))[0]  # e.g. "baseline_seed42"
+    try:
+        seed = int(name.split("_seed")[-1])
+    except ValueError:
+        seed = None
+    return path, seed
+
+
 def load_jsonl(config):
-    path = os.path.join(CKPT_DIR, f"{config}.jsonl")
-    if not os.path.exists(path):
+    path, _ = find_jsonl(config)
+    if path is None:
         return []
     records = []
     with open(path) as f:
@@ -179,6 +196,7 @@ def train_bpc_at_step(train_records, target_step, window=3):
 # ── per-config analysis ───────────────────────────────────────────────────────
 
 def analyze_config(config):
+    _, seed = find_jsonl(config)
     records = load_jsonl(config)
     summary = load_summary(config)
 
@@ -250,6 +268,7 @@ def analyze_config(config):
 
     result = {
         "config": config,
+        "seed": seed if seed is not None else (summary.get("seed") if summary else None),
         "phase": phase,
         "current_step": train_records[-1]["step"] if train_records else 0,
         "current_bpc":  train_records[-1]["bpc"]  if train_records else None,
@@ -547,26 +566,28 @@ def render_report(analyses):
 
     if p1_complete:
         lines += ["## Phase 1 Results", ""]
-        lines.append("| Rank | Config | Best Val BPC | vs baseline | Params | Time |")
-        lines.append("|------|--------|--------------|-------------|--------|------|")
+        lines.append("| Rank | Config | Seed | Best Val BPC | vs baseline | Params | Time |")
+        lines.append("|------|--------|------|--------------|-------------|--------|------|")
         for i, a in enumerate(sorted(p1_complete, key=lambda x: x["best_val_bpc"]), 1):
             vs     = f"{a['best_val_bpc'] - baseline_bpc:+.4f}" if baseline_bpc else "—"
             params = f"{a['summary']['n_params']:,}" if a["summary"] else "—"
             mins   = f"{a['summary']['elapsed_seconds']/60:.0f}m" if a["summary"] else "—"
-            lines.append(f"| {i} | `{a['config']}` | {a['best_val_bpc']:.4f} | {vs} | {params} | {mins} |")
+            seed   = str(a["seed"]) if a["seed"] is not None else "—"
+            lines.append(f"| {i} | `{a['config']}` | {seed} | {a['best_val_bpc']:.4f} | {vs} | {params} | {mins} |")
         lines += [""]
 
     if p2_complete:
         lines += ["## Phase 2 Results", ""]
-        lines.append("| Rank | Config | Type | Best Val BPC | vs mol | R | Params | Time |")
-        lines.append("|------|--------|------|--------------|--------|---|--------|------|")
+        lines.append("| Rank | Config | Seed | Type | Best Val BPC | vs mol | R | Params | Time |")
+        lines.append("|------|--------|------|------|--------------|--------|---|--------|------|")
         for i, a in enumerate(sorted(p2_complete, key=lambda x: x["best_val_bpc"]), 1):
             vs     = f"{a['best_val_bpc'] - mol_bpc:+.4f}" if mol_bpc else "—"
             R      = a["summary"].get("R", "?") if a["summary"] else "?"
             params = f"{a['summary']['n_params']:,}" if a["summary"] else "—"
             mins   = f"{a['summary']['elapsed_seconds']/60:.0f}m" if a["summary"] else "—"
             typ    = "upcycle" if a["config"] in _UPCYCLE_CONFIGS else "e2e"
-            lines.append(f"| {i} | `{a['config']}` | {typ} | {a['best_val_bpc']:.4f} | {vs} | {R} | {params} | {mins} |")
+            seed   = str(a["seed"]) if a["seed"] is not None else "—"
+            lines.append(f"| {i} | `{a['config']}` | {seed} | {typ} | {a['best_val_bpc']:.4f} | {vs} | {R} | {params} | {mins} |")
         lines += [""]
 
     # ── Progress summary (for in-progress runs) ───────────────────────────────
@@ -833,6 +854,7 @@ def render_agent_report(analyses):
 
         entry = {
             "config":        a["config"],
+            "seed":          a["seed"],
             "phase":         a["phase"],
             "type":          "upcycle" if a["config"] in _UPCYCLE_CONFIGS else ("hdc" if a["phase"] == 2 else "dense"),
             "status":        "complete" if a["summary"] else ("running" if a["current_step"] > 0 else "pending"),

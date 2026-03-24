@@ -177,7 +177,7 @@ def train(config: str, d: int = 512, n_layers: int = 8, n_heads: int = 8,
             print(f"torch.compile failed ({e}), continuing without it")
 
     # Local JSONL logger (always active)
-    logger = TrainLogger(ckpt_dir, run_name=config)
+    logger = TrainLogger(ckpt_dir, run_name=f"{config}_seed{seed}")
 
     # Lightning.ai experiment tracker (active when running in a Studio)
     lit = make_lit_logger(name=f"phase1-{config}", teamspace=teamspace)

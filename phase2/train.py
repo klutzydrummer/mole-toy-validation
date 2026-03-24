@@ -295,7 +295,8 @@ def train(
         except Exception as e:
             print(f"torch.compile failed ({e}), continuing without it")
 
-    logger = TrainLogger(ckpt_dir, run_name=config)
+    run_name = f"{config}_seed{seed}"
+    logger = TrainLogger(ckpt_dir, run_name=run_name)
     lit    = make_lit_logger(name=f"phase2-{config}", teamspace=teamspace)
     if lit is not None:
         lit.log_hyperparams({
@@ -365,7 +366,7 @@ def train(
             logger.log_step(step, avg_loss, lr, grad_norm)
 
             # HDC-specific fields appended to the same JSONL
-            with open(os.path.join(ckpt_dir, f"{config}.jsonl"), "a") as f:
+            with open(os.path.join(ckpt_dir, f"{run_name}.jsonl"), "a") as f:
                 f.write(json.dumps({
                     "step": step, "type": "hdc",
                     "loss_comp": avg_comp,
@@ -397,7 +398,7 @@ def train(
             b_bpc, m_bpc = evaluate_per_position(model, val_loader, device, None, amp_dtype=amp_dtype)
             print(f"  >>> boundary BPC: {b_bpc:.4f}  mid-chunk BPC: {m_bpc:.4f}  "
                   f"delta: {m_bpc - b_bpc:+.4f}")
-            with open(os.path.join(ckpt_dir, f"{config}.jsonl"), "a") as f:
+            with open(os.path.join(ckpt_dir, f"{run_name}.jsonl"), "a") as f:
                 f.write(json.dumps({
                     "step": step, "type": "pos_loss",
                     "boundary_bpc": b_bpc, "midchunk_bpc": m_bpc,
