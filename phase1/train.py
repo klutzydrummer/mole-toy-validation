@@ -27,6 +27,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from phase1.model import ToyTransformer
 from utils.data import get_dataloader, get_vocab_size, set_dataset, set_tokenizer
+from utils.device import configure_sdpa, get_amp_config, get_device
 from utils.metrics import ParamCounter, TrainLogger, ce_to_bpc
 
 # LightningLogger is only available inside Lightning.ai Studios — degrade gracefully elsewhere.
@@ -98,25 +99,16 @@ def train(config: str, d: int = 512, n_layers: int = 8, n_heads: int = 8,
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    use_amp = (device.type == "cuda")
-
-    # AMP dtype: bfloat16 on Ampere+ (sm >= 80, native BF16 tensor cores).
-    # Fall back to float16 on older hardware (T4 = sm75) to get native FP16 tensor cores.
-    # GradScaler is only needed for float16 (bfloat16 has FP32-range exponents).
-    amp_dtype = torch.bfloat16
-    if device.type == "cuda":
-        cap = torch.cuda.get_device_capability()
-        if cap[0] < 8:
-            amp_dtype = torch.float16
-    use_grad_scaler = use_amp and (amp_dtype == torch.float16)
+    device = get_device()
+    use_amp, amp_dtype, use_grad_scaler = get_amp_config(device)
     scaler = torch.amp.GradScaler("cuda", enabled=use_grad_scaler)
+    sdpa_desc = configure_sdpa(device)
 
     if device.type == "cpu":
         print("WARNING: Running on CPU. This will be very slow.")
         print("Switch to GPU in your Lightning.ai Studio settings.\n")
     else:
-        print(f"AMP dtype: {amp_dtype} | GradScaler: {use_grad_scaler}")
+        print(f"AMP dtype: {amp_dtype} | GradScaler: {use_grad_scaler} | SDPA: {sdpa_desc}")
 
     # Model
     model = ToyTransformer(
