@@ -216,7 +216,7 @@ def train(
         if cap[0] < 8:
             amp_dtype = torch.float16
     use_grad_scaler = use_amp and (amp_dtype == torch.float16)
-    scaler = torch.cuda.amp.GradScaler(enabled=use_grad_scaler)
+    scaler = torch.amp.GradScaler("cuda", enabled=use_grad_scaler)
 
     if device.type == "cpu":
         print("WARNING: Running on CPU. This will be very slow.")

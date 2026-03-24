@@ -14,7 +14,7 @@ import json
 import math
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 
 CKPT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "checkpoints")
 REPORT_PATH = os.path.join(CKPT_DIR, "report.md")
@@ -548,7 +548,7 @@ def next_steps(analyses):
 
 
 def render_report(analyses):
-    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     lines = []
 
     lines += [
@@ -823,7 +823,7 @@ def render_agent_report(analyses):
     Compact JSON report for Claude Code consumption.
     No prose, no charts — only structured signals needed for analysis.
     """
-    now = datetime.utcnow().strftime("%Y-%m-%dT%H:%MZ")
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
 
     # Reference BPCs for delta calculations
     ref = {}
