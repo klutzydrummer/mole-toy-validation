@@ -592,6 +592,15 @@ class HDCModel(nn.Module):
             nn.init.eye_(router.W_q.weight)
             nn.init.eye_(router.W_k.weight)
 
+        # Initialize ZoneD gate_proj to near-zero so the residual path starts suppressed.
+        # H-Net (arXiv:2507.07955) requires "initialized close to 0" for the dechunk
+        # residual connection. Our sigmoid-gated formulation requires a large negative
+        # bias to achieve this: sigmoid(-4.0) ≈ 0.018 ≈ 0. Weights zeroed so the gate
+        # output at init depends only on the bias, not the input.
+        # Gradually opens as training progresses — matches H-Net's intended warm-start.
+        nn.init.zeros_(self.zone_d.gate_proj.weight)
+        self.zone_d.gate_proj.bias.data.fill_(-4.0)
+
     def _init_weights(self, m):
         """Touches only nn.Linear and nn.Embedding.
         CausalRecurrenceLayer.log_a (nn.Parameter, not Linear) keeps its role-specific init
