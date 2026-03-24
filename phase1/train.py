@@ -159,9 +159,9 @@ def train(config: str, d: int = 512, n_layers: int = 8, n_heads: int = 8,
         if use_grad_scaler and "scaler_state" in ckpt:
             scaler.load_state_dict(ckpt["scaler_state"])
         if "rng_state" in ckpt:
-            torch.set_rng_state(ckpt["rng_state"])
+            torch.set_rng_state(ckpt["rng_state"].byte())
             if torch.cuda.is_available() and "cuda_rng_state" in ckpt:
-                torch.cuda.set_rng_state(ckpt["cuda_rng_state"])
+                torch.cuda.set_rng_state(ckpt["cuda_rng_state"].byte())
             random.setstate(ckpt["python_rng_state"])
             np.random.set_state(ckpt["numpy_rng_state"])
         start_step = ckpt["step"] + 1
