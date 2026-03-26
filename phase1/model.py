@@ -341,24 +341,37 @@ class MoLFFN(nn.Module):
         one_hot = F.one_hot(topk_idx, self.n_experts).to(x.dtype)  # [B, L, k, n_experts]
         expert_weights = (one_hot * topk_weights.unsqueeze(-1)).sum(dim=2)  # [B, L, n_experts]
 
-        # ---- Gate / Up: base + shared + Σ weighted expert corrections (BEFORE silu) ----
-        gate = self.base_gate(x) + self.shared_gate(x)
-        up = self.base_up(x) + self.shared_up(x)
+        # ---- Batched expert LoRA (replaces per-expert loop) ----
+        # Stack A/B matrices: [n_experts, d_in, rank] and [n_experts, rank, d_out].
+        # Parameter names and storage are unchanged — only the forward computation changes.
+        # Reduces 3 × 2 × n_experts matmul launches down to 3 × 2 batched GEMMs.
+        scale = self.expert_gate[0].scale  # 1/rank, identical for all experts
+        w = expert_weights.unsqueeze(-1)   # [B, L, n_experts, 1]
 
-        for e in range(self.n_experts):
-            w_e = expert_weights[:, :, e].unsqueeze(-1)  # [B, L, 1]
-            gate = gate + w_e * self.expert_gate[e](x)
-            up = up + w_e * self.expert_up[e](x)
+        A_gate = torch.stack([e.A for e in self.expert_gate])  # [E, d,    rank]
+        B_gate = torch.stack([e.B for e in self.expert_gate])  # [E, rank, d_ff]
+        A_up   = torch.stack([e.A for e in self.expert_up])
+        B_up   = torch.stack([e.B for e in self.expert_up])
+
+        # x: [B,L,d] → [B,L,E,rank] → [B,L,E,d_ff], then weighted sum → [B,L,d_ff]
+        xA_gate  = torch.einsum("bld,edr->bler", x, A_gate)
+        xA_up    = torch.einsum("bld,edr->bler", x, A_up)
+        xAB_gate = torch.einsum("bler,erd->bled", xA_gate, B_gate) * scale
+        xAB_up   = torch.einsum("bler,erd->bled", xA_up,   B_up)   * scale
+
+        # ---- Gate / Up: base + shared + Σ weighted expert corrections (BEFORE silu) ----
+        gate = self.base_gate(x) + self.shared_gate(x) + (xAB_gate * w).sum(dim=2)
+        up   = self.base_up(x)   + self.shared_up(x)   + (xAB_up   * w).sum(dim=2)
 
         # ---- Nonlinearity (ONCE on combined projections) ----
         hidden = F.silu(gate) * up
 
         # ---- Down: base + shared + Σ weighted expert corrections ----
-        output = self.base_down(hidden) + self.shared_down(hidden)
-
-        for e in range(self.n_experts):
-            w_e = expert_weights[:, :, e].unsqueeze(-1)
-            output = output + w_e * self.expert_down[e](hidden)
+        A_down = torch.stack([e.A for e in self.expert_down])  # [E, d_ff, rank]
+        B_down = torch.stack([e.B for e in self.expert_down])  # [E, rank, d]
+        xA_down  = torch.einsum("bld,edr->bler", hidden, A_down)
+        xAB_down = torch.einsum("bler,erd->bled", xA_down, B_down) * scale
+        output = self.base_down(hidden) + self.shared_down(hidden) + (xAB_down * w).sum(dim=2)
 
         # ---- Load balance update (no gradient) ----
         if self.training:
