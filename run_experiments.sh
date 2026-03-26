@@ -72,10 +72,24 @@ fi
 run_phase1() {
     local cfg="$1"
     local seed="${2:-42}"
+    local steps="${3:-100000}"
     echo ""
     echo "========================================"
     echo "  Phase 1: $cfg (seed=$seed)"
     echo "========================================"
+
+    # Skip if already trained to the target step count.
+    # Reads the last step from the JSONL rather than relying on summary.json,
+    # so this remains correct if total_steps is later increased.
+    local jsonl="checkpoints/${cfg}_seed${seed}.jsonl"
+    if [ -f "$jsonl" ]; then
+        local last_step
+        last_step=$(grep -o '"step":[0-9]*' "$jsonl" | tail -1 | grep -o '[0-9]*')
+        if [ -n "$last_step" ] && [ "$last_step" -ge $(( steps - 1 )) ]; then
+            echo "  Already complete at step $last_step — skipping."
+            return 0
+        fi
+    fi
 
     RESUME_FLAG=""
     if [ -f "checkpoints/${cfg}_seed${seed}_latest.pt" ]; then
@@ -97,7 +111,7 @@ run_phase1() {
         --config    "$cfg" \
         --d            512 \
         --n_heads      8 \
-        --total_steps  100000 \
+        --total_steps  "$steps" \
         --batch_size   32 \
         --seq_len      256 \
         --eval_interval 2500 \
@@ -157,6 +171,17 @@ run_phase2() {
     echo "========================================"
     echo "  Phase 2: $cfg (seed=$seed)"
     echo "========================================"
+
+    # Skip if already trained to the target step count.
+    local jsonl="checkpoints/${cfg}_seed${seed}.jsonl"
+    if [ -f "$jsonl" ]; then
+        local last_step
+        last_step=$(grep -o '"step":[0-9]*' "$jsonl" | tail -1 | grep -o '[0-9]*')
+        if [ -n "$last_step" ] && [ "$last_step" -ge $(( steps - 1 )) ]; then
+            echo "  Already complete at step $last_step — skipping."
+            return 0
+        fi
+    fi
 
     RESUME_FLAG=""
     if [ -f "checkpoints/${cfg}_seed${seed}_latest.pt" ]; then
