@@ -200,7 +200,7 @@ Pipeline: `embed(x)` is done in `HDCModel.forward` before `ZoneE` is called. Ins
 
 `phase2/model.py:156–251` — `BoundaryRouter.forward`
 
-Three routing modes: `cosine_rule` (no learned params), `learned_e2e` (H-Net style), `fixed_stride` (lower bound). In all modes position 0 is forced to p=1.0 (no predecessor, always a boundary). Selection uses `topk(M)` rather than H-Net's thresholding at 0.5, ensuring exactly M = L // R concept tokens are selected regardless of the learned distribution.
+Three routing modes: `cosine_rule` (no learned params), `learned_e2e` (H-Net style), `fixed_stride` (lower bound). In `cosine_rule` and `learned_e2e` modes, position 0 is forced to p=1.0 via `F.pad(p, (1, 0), value=1.0)` (no predecessor, always a boundary). `fixed_stride` does not apply this pad — it scatters 1.0 at positions R-1, 2R-1, ..., L-1; position 0 gets p=0.0. Selection uses `topk(M)` rather than H-Net's thresholding at 0.5, ensuring exactly M = L // R concept tokens are selected regardless of the learned distribution.
 
 **Deviation — top-M instead of threshold:** H-Net selects boundaries by `argmax(boundary_prob) == 1` (soft threshold at 0.5), which yields a variable number of tokens per sequence. We use `topk(M)` to guarantee exactly M = L // R tokens, because our inner transformer requires a fixed sequence length.
 
@@ -251,7 +251,7 @@ The `loss_comp` term is our simplified form of H-Net's Eq. 10 ratio loss. H-Net'
 
 ## Verification checklist
 
-1. **Position-0 boundary is always 1.0.** In `BoundaryRouter.forward` (`cosine_rule` and `learned_e2e` modes), verify `F.pad(p, (1, 0), value=1.0)` produces `boundary_probs[:, 0] == 1.0` for all inputs. Confirm that position 0 always appears in `boundary_idx` (it always wins `topk` because 1.0 is the maximum possible value).
+1. **Position-0 boundary for cosine_rule / learned_e2e.** Verify `F.pad(p, (1, 0), value=1.0)` produces `boundary_probs[:, 0] == 1.0` for all inputs in these modes, and that position 0 always appears in `boundary_idx`. Not applicable to `fixed_stride` — that mode scatters at R-1, 2R-1, ..., L-1 and does not guarantee position 0 is selected.
 
 2. **Top-M selection yields exactly M = L // R tokens.** Assert `boundary_idx.shape[1] == L // R` after `BoundaryRouter.forward` for sequences of length L. Test at L=512, R=4 (M=128) and at L=512, R=8 (M=64).
 

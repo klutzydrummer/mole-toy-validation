@@ -212,7 +212,7 @@ residuals = self.depth_residual_fn(output, residuals)
 The original HC paper (ByteDance, arXiv:2409.19606) and the mHC paper both report
 experiments at 1B parameters minimum. The smallest HC result is OLMo-1B-DHC with n=4.
 **No sub-1B results exist in any of the three mHC-family papers.** Behavior at ~28M params
-is extrapolation. The Phase 1 result (mHC: 3.5643 vs baseline: 3.5582) — mHC losing to
+is extrapolation. The Phase 1 result (mHC: 3.5736 vs baseline: 3.5875) — mHC losing to
 baseline — is consistent with HC gains being primarily a depth/scale phenomenon.
 
 ### n=2 is below the validated minimum

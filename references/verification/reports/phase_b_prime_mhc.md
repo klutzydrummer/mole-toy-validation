@@ -1,6 +1,6 @@
 # Phase B' Verification: mhc
-Date: 2026-03-23
-Verdict: PASS with issues — KromHC implementation correct; minor documentation staleness.
+Date: 2026-03-26
+Verdict: PASS with issues — KromHC implementation correct; minor documentation staleness. KromHC source paper (arXiv:2601.21579) now confirmed present in references/sources/papers/ — Theorem 4.2 fully locally traceable (gap from prior report closed).
 
 ---
 

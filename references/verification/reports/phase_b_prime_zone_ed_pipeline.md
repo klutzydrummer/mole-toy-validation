@@ -1,6 +1,6 @@
 # Phase B' Verification: zone_ed_pipeline
-Date: 2026-03-23
-Verdict: PASS with issues — Core pipeline logic correct; one undocumented init deviation with potential training implications.
+Date: 2026-03-26
+Verdict: PASS with issues — Core pipeline logic correct. Issue 3 from 2026-03-23 (gate_proj init) is RESOLVED: code uses nn.init.zeros_ + bias=-4.0 at lines 601-602, giving sigmoid(-4.0)≈0.018 — satisfies H-Net near-zero requirement. Remaining issues are documentation only.
 
 ---
 

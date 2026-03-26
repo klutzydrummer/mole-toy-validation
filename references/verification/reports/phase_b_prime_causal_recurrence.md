@@ -1,5 +1,5 @@
 # Phase B' Verification: causal_recurrence
-Date: 2026-03-23
+Date: 2026-03-26
 Verdict: PASS with issues — All issues are line-number drift only; no logic or formula errors found.
 
 ---
