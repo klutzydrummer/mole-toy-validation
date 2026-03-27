@@ -56,16 +56,53 @@ python utils/reporter.py --watch --interval 30 --parent-pid $$ &
 REPORTER_PID=$!
 echo "$REPORTER_PID" > "$REPORTER_PIDFILE"
 
+# ── Training API server ─────────────────────────────────────────────────────────
+# Exposes live metrics at https://training.onbrandsolutions.org via Cloudflare Tunnel.
+# Requires TRAINING_API_TOKEN and TUNNEL_TOKEN env vars to be set on the instance.
+# Skips silently if either is missing — training is never blocked by the API.
+API_PID=""
+CLOUDFLARED_PID=""
+API_PIDFILE="checkpoints/.api.pid"
+CLOUDFLARED_PIDFILE="checkpoints/.cloudflared.pid"
+
+if [ -n "${TRAINING_API_TOKEN:-}" ] && [ -n "${TUNNEL_TOKEN:-}" ]; then
+    echo "Starting training API server on port 8787..."
+    uvicorn utils.api_server:app --host 0.0.0.0 --port 8787 \
+        --log-level warning --no-access-log \
+        >> checkpoints/api_server.log 2>&1 &
+    API_PID=$!
+    echo "$API_PID" > "$API_PIDFILE"
+
+    echo "Starting Cloudflare Tunnel..."
+    cloudflared tunnel run --token "$TUNNEL_TOKEN" \
+        >> checkpoints/cloudflared.log 2>&1 &
+    CLOUDFLARED_PID=$!
+    echo "$CLOUDFLARED_PID" > "$CLOUDFLARED_PIDFILE"
+
+    echo "  API: https://training.onbrandsolutions.org"
+else
+    echo "  [API] Skipping: TRAINING_API_TOKEN or TUNNEL_TOKEN not set."
+fi
+
 # Track whether the script was interrupted by Ctrl+C.
 # SIGINT sets this flag then re-raises so the EXIT trap fires normally,
 # but shutdown is skipped — giving you a chance to git pull and restart.
 _INTERRUPTED=0
 trap '_INTERRUPTED=1; trap - INT; kill -INT $$' INT
 
+_cleanup() {
+    kill "$REPORTER_PID" 2>/dev/null
+    rm -f "$REPORTER_PIDFILE"
+    [ -n "$API_PID" ]         && kill "$API_PID"         2>/dev/null
+    [ -n "$CLOUDFLARED_PID" ] && kill "$CLOUDFLARED_PID" 2>/dev/null
+    rm -f "$API_PIDFILE" "$CLOUDFLARED_PIDFILE"
+    python utils/reporter.py
+}
+
 if [ "$SHUTDOWN" = "1" ]; then
-    trap "kill $REPORTER_PID 2>/dev/null; rm -f '$REPORTER_PIDFILE'; python utils/reporter.py; if [ \$_INTERRUPTED -eq 0 ]; then echo ''; echo 'Shutting down instance...'; sudo shutdown -h now; fi" EXIT
+    trap "_cleanup; if [ \$_INTERRUPTED -eq 0 ]; then echo ''; echo 'Shutting down instance...'; sudo shutdown -h now; fi" EXIT
 else
-    trap "kill $REPORTER_PID 2>/dev/null; rm -f '$REPORTER_PIDFILE'; python utils/reporter.py" EXIT
+    trap "_cleanup" EXIT
 fi
 
 # ── Phase 1 runner ─────────────────────────────────────────────────────────────

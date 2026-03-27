@@ -6,3 +6,5 @@ matplotlib==3.8.2
 tqdm==4.67.3
 sentencepiece==0.2.1
 litlogger==2026.3.9
+fastapi==0.115.12
+uvicorn==0.34.0
