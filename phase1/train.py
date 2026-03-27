@@ -72,6 +72,23 @@ def evaluate(model, val_loader, device, max_batches=50, amp_dtype=torch.bfloat16
     return total_loss / max(1, n_batches)
 
 
+def _lit_safe(lit, metrics: dict, step: int) -> None:
+    """Send metrics to litlogger, sanitizing non-finite floats and swallowing API errors.
+
+    NaN/Inf are replaced with -1.0 (an impossible value for all logged metrics) so that
+    anomalies remain visible in the dashboard rather than being silently dropped.
+    A -1.0 spike in grad_norm is unambiguous: it marks a NaN gradient event.
+    API failures are caught so telemetry can never crash a training run.
+    """
+    import math
+    safe = {k: (v if not isinstance(v, float) or math.isfinite(v) else -1.0)
+            for k, v in metrics.items()}
+    try:
+        lit.log_metrics(safe, step=step)
+    except Exception as e:
+        print(f"  [litlogger] WARNING: metric send failed at step {step}: {e}")
+
+
 def train(config: str, d: int = 512, n_layers: int = 8, n_heads: int = 8,
           seq_len: int = 256, batch_size: int = 32, total_steps: int = 100000,
           eval_interval: int = 2500, log_interval: int = 100,
@@ -229,8 +246,8 @@ def train(config: str, d: int = 512, n_layers: int = 8, n_heads: int = 8,
             logger.log_step(step, avg_loss, lr, grad_norm)
             logger.print_step(step, avg_loss, lr, grad_norm, interval=1)
             if lit is not None:
-                lit.log_metrics({"train/loss": avg_loss, "train/bpc": ce_to_bpc(avg_loss),
-                                 "train/lr": lr, "train/grad_norm": grad_norm}, step=step)
+                _lit_safe(lit, {"train/loss": avg_loss, "train/bpc": ce_to_bpc(avg_loss),
+                                "train/lr": lr, "train/grad_norm": grad_norm}, step=step)
             log_loss_accum = 0.0
             log_count = 0
 
@@ -239,7 +256,7 @@ def train(config: str, d: int = 512, n_layers: int = 8, n_heads: int = 8,
             val_bpc = logger.log_eval(step, val_loss)
             logger.print_eval(step, val_loss, val_bpc)
             if lit is not None:
-                lit.log_metrics({"val/loss": val_loss, "val/bpc": val_bpc}, step=step)
+                _lit_safe(lit, {"val/loss": val_loss, "val/bpc": val_bpc}, step=step)
 
             if config in ("mol", "compose"):
                 mol_stats = _unwrap(model).get_mol_stats()
@@ -253,7 +270,7 @@ def train(config: str, d: int = 512, n_layers: int = 8, n_heads: int = 8,
                         print(f"      layer {s['layer']} experts: {' '.join(pcts)}")
                     logger.log_mol_stats(step, mol_stats)
                     if lit is not None:
-                        lit.log_metrics({"mol/avg_balance": avg_bal}, step=step)
+                        _lit_safe(lit, {"mol/avg_balance": avg_bal}, step=step)
                 _unwrap(model).reset_mol_counts()
 
             if val_bpc < best_val_bpc:

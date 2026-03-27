@@ -68,20 +68,23 @@ def _unwrap(model):
 
 
 def _lit_log(lit, metrics: dict, step: int = None) -> None:
-    """Wrapper around lit.log_metrics that silently drops NaN/inf values.
-    Lightning's API serializes metrics to JSON; float('nan') becomes 'NaN'
-    which is invalid JSON and raises a 400 error from the Lightning cloud."""
+    """Send metrics to litlogger, sanitizing non-finite floats and swallowing API errors.
+
+    NaN/Inf are replaced with -1.0 (an impossible value for all logged metrics) so that
+    anomalies remain visible in the dashboard rather than being silently dropped.
+    A -1.0 spike in grad_norm is unambiguous: it marks a NaN gradient event.
+    API failures are caught so telemetry can never crash a training run.
+    """
     import math
-    clean = {k: v for k, v in metrics.items() if isinstance(v, float) and math.isfinite(v)}
-    if not clean:
-        return
+    safe = {k: (v if not isinstance(v, float) or math.isfinite(v) else -1.0)
+            for k, v in metrics.items()}
     try:
         if step is not None:
-            lit.log_metrics(clean, step=step)
+            lit.log_metrics(safe, step=step)
         else:
-            lit.log_metrics(clean)
-    except Exception:
-        pass  # Don't let logging failures crash training
+            lit.log_metrics(safe)
+    except Exception as e:
+        print(f"  [litlogger] WARNING: metric send failed at step {step}: {e}")
 
 
 def boundary_entropy(boundary_probs: torch.Tensor) -> float:
