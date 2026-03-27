@@ -84,7 +84,7 @@ run_phase1() {
     local jsonl="checkpoints/${cfg}_seed${seed}.jsonl"
     if [ -f "$jsonl" ]; then
         local last_step
-        last_step=$(grep -o '"step":[0-9]*' "$jsonl" | tail -1 | grep -o '[0-9]*')
+        last_step=$(grep -oP '"step":\s*\K[0-9]+' "$jsonl" | tail -1)
         if [ -n "$last_step" ] && [ "$last_step" -ge $(( steps - 1 )) ]; then
             echo "  Already complete at step $last_step — skipping."
             return 0
@@ -176,7 +176,7 @@ run_phase2() {
     local jsonl="checkpoints/${cfg}_seed${seed}.jsonl"
     if [ -f "$jsonl" ]; then
         local last_step
-        last_step=$(grep -o '"step":[0-9]*' "$jsonl" | tail -1 | grep -o '[0-9]*')
+        last_step=$(grep -oP '"step":\s*\K[0-9]+' "$jsonl" | tail -1)
         if [ -n "$last_step" ] && [ "$last_step" -ge $(( steps - 1 )) ]; then
             echo "  Already complete at step $last_step — skipping."
             return 0
