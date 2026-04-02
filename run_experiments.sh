@@ -262,6 +262,9 @@ case "$TARGET" in
     run_phase1 mol
     run_phase1 mol_single
     run_phase1 compose
+    run_phase1 mla
+    run_phase1 diff_attn
+    run_phase1 diff_mla
 
     # Phase 2 — smoke test gates ALL configs, no exceptions
     run_smoke_test
@@ -282,6 +285,9 @@ case "$TARGET" in
     run_phase1 mol
     run_phase1 mol_single
     run_phase1 compose
+    run_phase1 mla
+    run_phase1 diff_attn
+    run_phase1 diff_mla
     ;;
 
   phase2)
@@ -298,7 +304,7 @@ case "$TARGET" in
     ;;
 
   # Individual Phase 1 configs
-  baseline | mhc | mol | compose)
+  baseline | mhc | mol | compose | mla | diff_attn | diff_mla)
     run_phase1 "$TARGET"
     ;;
 
@@ -329,7 +335,7 @@ case "$TARGET" in
   *)
     echo "ERROR: Unknown target '$TARGET'"
     echo "Usage: bash run_experiments.sh [all|phase1|phase2|<config>]"
-    echo "Phase 1 configs: baseline mhc mol compose"
+    echo "Phase 1 configs: baseline mhc mol compose mla diff_attn diff_mla"
     echo "Phase 2 configs: hdc_rulebased hdc_gate hdc_stride hdc_r2 hdc_r8 hdc_e2e_isolated"
     echo "                 hdc_upcycle_stride hdc_upcycle_gate  (require mol_best.pt)"
     exit 1
@@ -344,7 +350,8 @@ echo "========================================"
 python - <<'EOF'
 import json, os, glob
 
-PHASE1 = ["baseline", "baseline_wide", "mhc", "mol", "mol_single", "compose"]
+PHASE1 = ["baseline", "baseline_wide", "mhc", "mol", "mol_single", "compose",
+          "mla", "diff_attn", "diff_mla"]
 PHASE2 = [
     "hdc_rulebased", "hdc_gate", "hdc_stride", "hdc_r2", "hdc_r8",
     "hdc_e2e_isolated", "hdc_upcycle_stride", "hdc_upcycle_gate",

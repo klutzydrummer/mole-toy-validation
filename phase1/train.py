@@ -334,7 +334,8 @@ def train(config: str, d: int = 512, n_layers: int = 8, n_heads: int = 8,
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Phase 1 Training")
     parser.add_argument("--config", type=str, default="baseline",
-                        choices=["baseline", "baseline_wide", "mhc", "mol", "mol_single", "compose"])
+                        choices=["baseline", "baseline_wide", "mhc", "mol", "mol_single", "compose",
+                                 "mla", "diff_attn", "diff_mla"])
     parser.add_argument("--d", type=int, default=512)
     parser.add_argument("--n_layers", type=int, default=8)
     parser.add_argument("--n_heads", type=int, default=8)

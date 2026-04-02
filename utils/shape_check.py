@@ -52,6 +52,9 @@ def check_phase1():
         ("mol",           {}),
         ("mol_single",    {}),
         ("compose",       {}),
+        ("mla",           {}),
+        ("diff_attn",     {}),
+        ("diff_mla",      {}),
     ]
 
     results = []

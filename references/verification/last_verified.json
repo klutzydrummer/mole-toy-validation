@@ -2,16 +2,22 @@
   "_note": "Updated by utils/verify.py --full. Do not edit manually.",
   "files": {
     "phase1/model.py": {
-      "git_hash": "b8f22e34766fa3cf21d41d10ead84d355bf015ec",
-      "verified_at": "2026-03-26T23:53:53Z",
+      "git_hash": "5078d459a660c73518a798def80722be1428cfcb",
+      "verified_at": "2026-04-02T02:07:15Z",
       "result": "pass",
-      "report": "references/verification/reports/"
+      "report": "references/verification/reports/phase_b_prime_mla_attention.md"
     },
     "phase2/model.py": {
       "git_hash": "59494c3039bb79f198dbd8b2b43dbe06e41ad9fc",
-      "verified_at": "2026-03-26T23:53:53Z",
+      "verified_at": "2026-04-02T02:07:15Z",
       "result": "pass",
-      "report": "references/verification/reports/"
+      "report": "references/verification/reports/phase_b_prime_mla_attention.md"
+    },
+    "references/verification/reports/phase_b_prime_diff_attention.md": {
+      "git_hash": "7fbed6a5c6ebc30363a2ad3a6630bcc51de6b20b",
+      "verified_at": "2026-04-02T02:06:10Z",
+      "result": "pass",
+      "report": "references/verification/reports/phase_b_prime_mla_attention.md"
     }
   }
 }
