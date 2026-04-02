@@ -81,10 +81,14 @@ async def _http_exc(request: Request, exc: HTTPException):
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
 
-def require_token(creds: Optional[HTTPAuthorizationCredentials] = Depends(_bearer)):
+def require_token(
+    creds: Optional[HTTPAuthorizationCredentials] = Depends(_bearer),
+    token: Optional[str] = Query(None, include_in_schema=False),
+):
     if not API_TOKEN:
         raise HTTPException(status_code=500, detail="TRAINING_API_TOKEN not configured on server")
-    if creds is None or creds.credentials != API_TOKEN:
+    provided = (creds.credentials if creds else None) or token
+    if provided != API_TOKEN:
         raise HTTPException(status_code=401, detail="Invalid or missing Bearer token")
 
 
