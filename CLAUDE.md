@@ -147,7 +147,7 @@ Dataset: WikiText-103-raw, BPE tokenizer (vocab=4096, sentencepiece), seq_len=25
 | mol_seed42 | 3.5497 | 100k complete | Confirms prior 3.5702 run; inner network for Phase 2 |
 | mol_single_seed42 | 3.5558 | 100k complete | Q2: routing beats single-LoRA by ~0.006 BPC |
 | baseline_seed42 | 3.5605 | 100k complete | Seed42 reproducibility run |
-| mla_seed42 | 3.7175 (step 64999) | ~67k in progress | MLA KV compression; declining fast (−0.068 per 10k steps); LR still high |
+| mla_seed42 | 3.5859 | 100k complete | MLA KV compression; worse than baseline (3.5605) — KV compression hurts at this scale |
 | diff_attn_seed42 | — | not yet started | Differential Attention V2 (Jan 2026) |
 | diff_mla_seed42 | — | not yet started | Diff V2 + MLA composition (novel) |
 
