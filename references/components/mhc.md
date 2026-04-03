@@ -302,18 +302,20 @@ Achieves best downstream accuracy and lowest gradient norms among all HC variant
    `[B, L, n, d]`; confirm `HyperConnection.forward` receives `[B, L, n, d]` and returns
    `[B, L, n, d]`.
 
-7. **Stream expansion:** Confirm the `.clone()` at line 456 is present — without it, the
+7. **Stream expansion:** Confirm the `.clone()` at line 798 is present — without it, the
    expand creates a view and all streams share memory, which would break the divergence
    mechanism.
 
 8. **Stream collapse weights:** Confirm `stream_collapse_logits` is initialized to zeros and
    that `softmax` is applied (not raw logits) before the einsum.
 
-9. **Pre-norm inside branch_fn:** Confirm the lambda at lines 387–388 applies `norm1`/`norm2`
+9. **Pre-norm inside branch_fn:** Confirm the lambda at lines 702–703 applies `norm1`/`norm2`
    inside the branch callable, so that the normalized input goes to the sublayer while the
    un-normalized stream participates in H_res mixing. This matches the paper's structure where
    F() operates on the pre-processed branch input, not the raw stream.
 
-10. **Sinkhorn τ and n_iters match reference:** Confirm `sinkhorn_log` in our code uses
-    `tau=0.05` and `n_iters=10`, matching the reference code defaults (not the paper's
-    t_max=20).
+10. **KromHC replaces Sinkhorn — NOT APPLICABLE:** Deviation 3 documents that `sinkhorn_log`
+    was fully replaced by `KromHCResidual` (Kronecker product factorization of H_res into two
+    2×2 doubly-stochastic factors). Confirm `KromHCResidual` is present at `phase1/model.py:353`
+    and that no call to `sinkhorn_log` exists in the file. The τ=0.05 / n_iters=10 check
+    against the reference code is superseded by this architectural change.

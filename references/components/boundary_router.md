@@ -162,7 +162,7 @@ Class `BoundaryRouter` at line 156; `ZoneE` (which owns the router) at line 258.
 
 1. **Top-M hard selection instead of soft argmax threshold.** H-Net uses `argmax(boundary_prob)` to select a variable number of boundary tokens. Our `BoundaryRouter` always selects exactly `M = L // R` tokens via `boundary_probs.topk(M)`. This enforces a fixed compression ratio per batch rather than a stochastic one, trading dynamic compression for training stability.
 
-2. **Simplified compression loss.** H-Net uses the full ratio loss (Eq. 10 above). Our training loop uses a simpler quadratic proxy (`phase2/model.py:480`, `phase2/train.py:592`):
+2. **Simplified compression loss.** H-Net uses the full ratio loss (Eq. 10 above). Our training loop uses a simpler quadratic proxy (`phase2/train.py:337`):
    ```
    loss_comp = (boundary_probs.mean() - 1/R)²
    ```
@@ -171,6 +171,8 @@ Class `BoundaryRouter` at line 156; `ZoneE` (which owns the router) at line 258.
 3. **No STE (Straight-Through Estimator).** H-Net wraps confidence scores with `ste(c) = c + stopgradient(1 − c)` (H-Net Eq. 7) to round forward while preserving continuous gradients. We do not apply STE because top-M selection is not used as a multiplicative weight on the token representations; the boundary_probs themselves flow into Zone D's EMA without discretization.
 
 4. **Cosine rule uses raw encoder outputs without W_q/W_k.** The `cosine_rule` mode (`hnet_boundary.py` equivalent would be W_q = W_k = I at all times, never updated). This is a strict subset of learned routing with frozen identity projections.
+
+6. **`_no_reinit` omitted; replaced with post-init re-application.** The H-Net reference sets `_no_reinit = True` on W_q/W_k to prevent any downstream `_init_weights` sweep from overwriting the identity initialization. Our code instead initializes W_q/W_k to identity directly in `BoundaryRouter.__init__` (`phase2/model.py:201-202`) and then re-applies `nn.init.eye_` in `HDCModel.__init__` after the global `self.apply(_init_weights)` sweep (`phase2/model.py:591-593`). This achieves the same outcome — identity weights survive — via a different mechanism.
 
 5. **`learned_isolated` gradient isolation (our addition).** Neither H-Net nor DLCM propose stop-gradient through the boundary probability. This mode is an original ablation (A5) to test whether end-to-end LM gradients are necessary for learning useful boundaries, or whether the compression loss alone is sufficient. Expected result: near-random boundaries, confirming that LM signal is required.
 
@@ -189,22 +191,22 @@ This is the mean binary cross-entropy of the boundary probability distribution, 
 
 ## Verification checklist
 
-1. **Identity init preserved.** Confirm `BoundaryRouter.W_q.weight` and `W_k.weight` are `torch.eye(d)` immediately after construction for `learned_e2e` and `learned_isolated` modes. (`phase2/model.py:195-196`)
+1. **Identity init preserved.** Confirm `BoundaryRouter.W_q.weight` and `W_k.weight` are `torch.eye(d)` immediately after construction for `learned_e2e` and `learned_isolated` modes. Init at `phase2/model.py:201-202`; re-applied after `self.apply(_init_weights)` at `phase2/model.py:591-593`.
 
-2. **p₁ = 1.0 always set.** In all three non-stride modes, position 0 is padded with `value=1.0`. Confirm `boundary_probs[:, 0].all() == 1.0` for a freshly constructed model's first forward pass. (`phase2/model.py:230, 238`)
+2. **p₁ = 1.0 always set.** In all three non-stride modes, position 0 is padded with `value=1.0`. Confirm `boundary_probs[:, 0].all() == 1.0` for a freshly constructed model's first forward pass. (`phase2/model.py:236, 244`)
 
-3. **Top-M selects exactly M tokens.** Check `boundary_idx.shape[1] == seq_len // R` for all routing modes. Confirm position 0 is always in `boundary_idx` (since `boundary_probs[:, 0] = 1.0` always wins topk). (`phase2/model.py:242-243`)
+3. **Top-M selects exactly M tokens.** Check `boundary_idx.shape[1] == seq_len // R` for all routing modes. Confirm position 0 is always in `boundary_idx` (since `boundary_probs[:, 0] = 1.0` always wins topk). (`phase2/model.py:248-249`)
 
 4. **`fixed_stride` has no parameters.** Confirm `len(list(model.zone_e.router.parameters())) == 0` when `routing="fixed_stride"`. (`phase2/model.py:211-217`)
 
-5. **`learned_isolated` detaches before Zone D.** Confirm that `boundary_probs_for_zd.requires_grad == False` when routing is `learned_isolated`, while `boundary_probs.requires_grad == True` (pre-detach). (`phase2/model.py:247`)
+5. **`learned_isolated` detaches before Zone D.** Confirm that `boundary_probs_for_zd.requires_grad == False` when routing is `learned_isolated`, while `boundary_probs.requires_grad == True` (pre-detach). (`phase2/model.py:253`)
 
 6. **`cosine_rule` and `learned_e2e` produce identical output at init.** Immediately after construction (before any gradient steps), both modes should produce the same `boundary_probs` for the same input, since `learned_e2e` starts with identity projections. Verify numerically.
 
-7. **`loss_comp` shape and value.** `loss_comp = (boundary_probs.mean() - 1/R)**2`. At R=4, target mean is 0.25. Confirm this is a scalar and its value is near 0 when the router correctly selects 1/4 of positions. (`phase2/train.py:592`)
+7. **`loss_comp` shape and value.** `loss_comp = (boundary_probs.mean() - 1/R)**2`. At R=4, target mean is 0.25. Confirm this is a scalar and its value is near 0 when the router correctly selects 1/4 of positions. (`phase2/train.py:337`)
 
-8. **`boundary_entropy` NaN guard.** Verify no NaN in `boundary_entropy()` when `boundary_probs` contains values exactly 0.0 or 1.0 (as produced by `fixed_stride`). The clamp at `1e-6` should handle this. (`phase2/train.py:89`)
+8. **`boundary_entropy` NaN guard.** Verify no NaN in `boundary_entropy()` when `boundary_probs` contains values exactly 0.0 or 1.0 (as produced by `fixed_stride`). The clamp at `1e-6` should handle this. (`phase2/train.py:95`)
 
-9. **Gradient flow in `learned_e2e`.** Confirm that `W_q.weight.grad` and `W_k.weight.grad` are non-None after a backward pass with `routing="learned_e2e"`. Confirm they are None with `routing="learned_isolated"` (only `loss_comp` contributes, but `loss_comp` uses `boundary_probs` pre-detach — verify `loss_comp` does use the pre-detach `boundary_probs`, not `boundary_probs_for_zd`). (`phase2/model.py:589-593`)
+9. **Gradient flow in `learned_e2e`.** Confirm that `W_q.weight.grad` and `W_k.weight.grad` are non-None after a backward pass with `routing="learned_e2e"`. Confirm they are None with `routing="learned_isolated"` (only `loss_comp` contributes, but `loss_comp` uses `boundary_probs` pre-detach — verify `loss_comp` does use the pre-detach `boundary_probs`, not `boundary_probs_for_zd`). (`phase2/model.py:591-593`)
 
-10. **Ratio loss not used.** Confirm the training loop does not use H-Net Eq. 10 or DLCM Eq. 10. Only `loss_comp = (bp.mean() - 1/R)**2` is added to `loss_ntp`. This is an intentional deviation from both reference papers. (`phase2/train.py:592-593`)
+10. **Ratio loss not used.** Confirm the training loop does not use H-Net Eq. 10 or DLCM Eq. 10. Only `loss_comp = (bp.mean() - 1/R)**2` is added to `loss_ntp`. This is an intentional deviation from both reference papers. (`phase2/train.py:337-338`)

@@ -1,5 +1,5 @@
 # Phase B' Verification: boundary_router
-Date: 2026-03-26
+Date: 2026-04-02 (re-verified; prior run 2026-03-26)
 Verdict: PASS with issues — All routing logic correct; stale line refs and one undocumented deviation.
 
 ---

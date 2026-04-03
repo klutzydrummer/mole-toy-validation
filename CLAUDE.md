@@ -4,7 +4,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this repo is
 
-Phase 1 toy validation of the MoLE architecture (Mixture-of-LoRAs Encoder) at ~5M params on WikiText-103 (BPE, vocab=4096). Four configs: `baseline`, `mhc`, `mol`, `compose`. Phase 2 (HDC) wraps the mol inner network with Zone E and Zone D for content-aware compression.
+Phase 1 toy validation of the MoLE architecture (Mixture-of-LoRAs Encoder) at ~5M params on WikiText-103 (BPE, vocab=4096). Phase 2 (HDC) wraps the mol inner network with Zone E and Zone D for content-aware compression.
+
+**Phase 1 configs (9 total):**
+- Core: `baseline`, `mhc`, `mol`, `compose`
+- Attention variants: `mla` (MLA KV compression, arXiv:2405.04434), `diff_attn` (Diff Attn V2, Jan 2026), `diff_mla` (novel Diff V2 + MLA composition)
+- Ablations: `baseline_wide` (widened FFN, param-matched to mol for Q1 fair comparison), `mol_single` (capacity-matched single LoRA, no routing, for Q2)
 
 ---
 
@@ -30,7 +35,7 @@ nix-shell --run "ruff check ."                  # lint
 `shell.nix` provides CPU-only torch + torchinfo + ruff. A single forward pass at full production dims (d=512, seq=256, batch=1) costs ~200 MB RAM — safe to run locally.
 
 `shape_check.py` validates:
-- Output shape contracts for all 12 non-upcycle configs (6 Phase 1 + 6 Phase 2)
+- Output shape contracts for all 15 non-upcycle configs (9 Phase 1 + 6 Phase 2)
 - No NaN/Inf in logits
 - boundary_probs in [0, 1] for all Phase 2 configs
 
@@ -40,7 +45,7 @@ nix-shell --run "ruff check ."                  # lint
 
 ```bash
 bash run_experiments.sh                               # run all configs (Phase 1 + Phase 2)
-bash run_experiments.sh phase1                        # Phase 1 only (4 configs)
+bash run_experiments.sh phase1                        # Phase 1 only (9 configs)
 bash run_experiments.sh phase2                        # Phase 2 only (8 HDC configs)
 bash run_experiments.sh baseline                      # single Phase 1 config
 bash run_experiments.sh hdc_gate                      # single Phase 2 config
@@ -92,13 +97,15 @@ Authoritative correctness criteria live in `references/components/`. Before touc
 | CausalRecurrenceLayer | `references/components/causal_recurrence.md` | sqrt(1-a²) term, float32 sigmoid, parallel scan |
 | BoundaryRouter | `references/components/boundary_router.md` | adjacent key k_{t-1}, p_0=1.0, top-M selection |
 | Zone E / Zone D | `references/components/zone_ed_pipeline.md` | EMA, plug-back, gated residual, smoke test item 10 |
+| MLA attention | `references/components/mla_attention.md` | KV shared latent (Eq. 9–11), Q separate latent (Eq. 12–13), no RMSNorm on latents (intentional deviation), d_c=d//4, d_c_q=d//2 |
+| Diff Attn V2 / DiffMLA | `references/components/diff_attention.md` | Doubled Q heads, GQA pairing via repeat_interleave (not blocked split), sigmoid λ (not exp), no per-head RMSNorm, W_lambda bias=True |
 
 ---
 
 ## Architecture
 
 ```
-phase1/model.py     ToyTransformer: baseline / mhc / mol / compose
+phase1/model.py     ToyTransformer: baseline / baseline_wide / mhc / mol / mol_single / compose / mla / diff_attn / diff_mla
 phase1/train.py     Training loop: AMP, torch.compile, resume, eval
 phase2/model.py     HDCModel: ZoneE + InnerTransformer + ZoneD
 phase2/train.py     Dual-loss training loop (loss_ntp + λ_comp * loss_comp)
@@ -121,6 +128,8 @@ Dataset: WikiText-103-raw, BPE tokenizer (vocab=4096, sentencepiece), seq_len=25
 
 ## Phase 1 Results
 
+### Original runs (100k steps, no seed suffix)
+
 | Config | Best val BPC | Notes |
 |--------|-------------|-------|
 | compose | 3.5316 | Best overall — but mHC optimization issue unresolved |
@@ -128,7 +137,20 @@ Dataset: WikiText-103-raw, BPE tokenizer (vocab=4096, sentencepiece), seq_len=25
 | mhc | 3.5736 | Rising grad norm (0.54→0.70); diagnose before composing |
 | baseline | 3.5875 | Reference |
 
-Do not compose mHC+MoL+HDC until mHC's grad norm issue is diagnosed. Diagnostic: `python phase1/train.py --config mhc --max_lr 1.5e-4 --total_steps 25000`.
+### Seed42 reruns + new attention configs (in progress / complete as of 2026-04-02)
+
+| Config | Best val BPC | Steps | Notes |
+|--------|-------------|-------|-------|
+| baseline_wide_seed42 | 3.539 | 100k complete | d_ff=1600 (param-matched to mol); Q1 ablation |
+| mhc_seed42 | 3.546 | 100k complete | Grad norm still rising (0.80→1.37); issue unresolved |
+| baseline_seed42 | 3.560 | 100k complete | Seed42 reproducibility run |
+| mol_seed42 | ~3.57 (est.) | ~62k in progress | On track toward prior 3.5702 |
+| mla | — | not yet started | MLA KV compression (arXiv:2405.04434) |
+| diff_attn | — | not yet started | Differential Attention V2 (Jan 2026) |
+| diff_mla | — | not yet started | Diff V2 + MLA composition (novel) |
+| mol_single | — | not yet started | Q2: capacity-matched single LoRA, no routing |
+
+Do not compose mHC+MoL+HDC until mHC's grad norm issue is diagnosed. The rising grad norm is continuous — observed 0.80→1.37 over 100k steps with no stabilization. Diagnostic: `python phase1/train.py --config mhc --max_lr 1.5e-4 --total_steps 25000`.
 
 ---
 

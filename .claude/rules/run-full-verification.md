@@ -50,6 +50,8 @@ For each component spec in `references/components/`, dispatch a subagent that:
 | `mol_ffn.md` | `deepseek_v3_2412.19437.md`, `deepseek_v3_moe.py` | `phase1/model.py` — MoLFFN; `phase2/model.py` — InnerTransformer |
 | `mhc.md` | `mhc_2512.24880.md`, `mhc_hyper_connections.py` | `phase1/model.py` — mHCLayer |
 | `attention_rope_norms.md` | `rope_2104.09864.md`, `rmsnorm_1910.07467.md`, `swiglu_2002.05202.md`, `rope.py`, `rmsnorm.py`, `swiglu.py` | `phase1/model.py`, `phase2/model.py` — attention blocks |
+| `mla_attention.md` | `mla_deepseek_v2_2405.04434.md`, `mla_attention.py` | `phase1/model.py` — MLACausalAttention (lines 81–148) |
+| `diff_attention.md` | `diff_attn_v1_2410.05258.md`, `diff_attn_v2_2026_01.md`, `mla_deepseek_v2_2405.04434.md`, `mla_attention.py` | `phase1/model.py` — DifferentialCausalAttention (lines 151–225), DiffMLAAttention (lines 228–310) |
 
 ---
 
@@ -66,6 +68,6 @@ For each component spec in `references/components/`, dispatch a subagent that:
 
 ## Scope
 
-"Full verification" covers all 6 component files and both model files.
+"Full verification" covers all 8 component files and both model files.
 
 If the user says "verify causal_recurrence" or names a specific component, run Phase B' for that component only, but still follow all 5 steps above for that component.

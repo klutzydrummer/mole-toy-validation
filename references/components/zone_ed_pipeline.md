@@ -58,7 +58,7 @@ bₜ = 𝟙{pₜ ≥ 0.5}
 
 "p₁ = 1.0 by definition, ensuring the sequence begins with a boundary."
 
-W_q and W_k are initialized to the identity matrix; the `_no_reinit = True` flag prevents downstream re-initialization from overwriting this.
+W_q and W_k are initialized to the identity matrix. The H-Net reference uses `_no_reinit = True` to prevent downstream re-initialization from overwriting this; our implementation instead re-applies `nn.init.eye_` after `self.apply(_init_weights)` in `HDCModel.__init__` (lines 591–593) — same outcome, different mechanism (see `boundary_router.md` Deviation 6).
 
 ### Eq. 5 — EMA smoothing
 
@@ -239,7 +239,7 @@ embed(x) [B,L,d]
   → ZoneE → concept_tokens [B,M,d], encoder_out [B,L,d],
              boundary_probs [B,L], boundary_idx [B,M]
   → InnerTransformer → concept_out [B,M,d]
-  → ZoneD(concept_out, encoder_out, boundary_probs, boundary_idx) → token_repr [B,L,d]
+  → ZoneD(concept_out, encoder_out, boundary_probs_for_zd, boundary_idx) → token_repr [B,L,d]
   → lm_head → logits [B,L,vocab_size]
 ```
 
@@ -263,7 +263,7 @@ The `loss_comp` term is our simplified form of H-Net's Eq. 10 ratio loss. H-Net'
 
 6. **Gated residual weighting.** At a known boundary position j where `boundary_probs[:,j] ≈ 1.0`, verify that `(1 - p_expanded) * gate * encoder_out` ≈ 0, so the output is dominated by `plugback`. At a non-boundary position where `boundary_probs[:,j] ≈ 0.0`, verify the output is dominated by the gated encoder_out residual.
 
-7. **W_q / W_k identity initialization survives _init_weights.** In `HDCModel.__init__`, `_init_weights` runs `nn.init.normal_` on all `nn.Linear` layers, which would overwrite the identity init. Verify that the explicit `nn.init.eye_` re-application at lines 568–571 restores the correct identity weights after `self.apply(self._init_weights)`.
+7. **W_q / W_k identity initialization survives _init_weights.** In `HDCModel.__init__`, `_init_weights` runs `nn.init.normal_` on all `nn.Linear` layers, which would overwrite the identity init. Verify that the explicit `nn.init.eye_` re-application at lines 591–593 restores the correct identity weights after `self.apply(self._init_weights)`.
 
 8. **Compression ratio R controls M correctly.** For configs `hdc_r2` (R=2), `hdc_r4` (R=4), `hdc_r8` (R=8) at sequence length L=512, verify InnerTransformer receives inputs of shape `[B, 256, d]`, `[B, 128, d]`, `[B, 64, d]` respectively.
 

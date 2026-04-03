@@ -383,7 +383,7 @@ and k before calling `F.scaled_dot_product_attention`.
 
 ### SwiGLU
 
-`phase1/model.py:81–93`
+`phase1/model.py:313–325`
 
 ```python
 class SwiGLU(nn.Module):
@@ -407,10 +407,13 @@ correctness or the 8/3 parameter ratio.
 
 ### MLA
 
-MLA is not yet implemented in phase1 or phase2. The phase1 transformer uses standard
-`CausalSelfAttention` (`phase1/model.py:57–78`) — vanilla MHA with RoPE but no KV compression.
-The reference code and equations above are retained here for when MLA is added to the Zone A/B
-blocks in a future phase.
+A simplified `MLACausalAttention` class exists at `phase1/model.py:81–148` — it implements the
+low-rank KV/Q compression (DeepSeek-V2 Eq. 9–13) but intentionally omits decoupled RoPE (Eq. 14–19)
+and the KV-cache absorption trick (inference optimization). Standard RoPE is applied to full K and Q
+heads. See `references/components/mla_attention.md` for the full spec and intentional deviations.
+
+The full MLA as specified in Eq. 14–19 (decoupled RoPE, absorption) is not implemented here — those
+equations are retained for reference only.
 
 ---
 

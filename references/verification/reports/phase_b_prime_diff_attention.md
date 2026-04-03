@@ -1,6 +1,7 @@
 # Phase B' Verification Report: diff_attention.md
 
-**Date:** 2026-03-31
+**Date:** 2026-03-31 (re-verified 2026-04-02)
+**Verifier:** Claude Sonnet 4.6 (Phase B' agent, full re-verification 2026-04-02)
 **Verdict:** PASS
 
 ---

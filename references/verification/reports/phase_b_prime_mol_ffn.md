@@ -1,6 +1,8 @@
 # Phase B' Verification: mol_ffn
-Date: 2026-03-26
+Date: 2026-04-02 (re-verified; original: 2026-03-26)
 Verdict: PASS with issues — All routing logic and batched-einsum composition correct; three documentation-only issues carried forward from previous report; one new issue added (spec composition code block is now stale).
+
+**2026-04-02 re-verification note:** Full independent re-verification performed against current code. All checklist items re-checked against actual line numbers. Findings are identical to the 2026-03-26 report — no new discrepancies found, no issues resolved. The three existing documentation issues (stale line numbers, stale composition code snippet, rank default ambiguity) remain open but non-critical. Implementation correctness confirmed.
 
 ---
 
