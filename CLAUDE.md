@@ -137,18 +137,19 @@ Dataset: WikiText-103-raw, BPE tokenizer (vocab=4096, sentencepiece), seq_len=25
 | mhc | 3.5736 | Rising grad norm (0.54→0.70); diagnose before composing |
 | baseline | 3.5875 | Reference |
 
-### Seed42 reruns + new attention configs (in progress / complete as of 2026-04-02)
+### Seed42 reruns + new attention configs (as of 2026-04-03)
 
 | Config | Best val BPC | Steps | Notes |
 |--------|-------------|-------|-------|
-| baseline_wide_seed42 | 3.539 | 100k complete | d_ff=1600 (param-matched to mol); Q1 ablation |
-| mhc_seed42 | 3.546 | 100k complete | Grad norm still rising (0.80→1.37); issue unresolved |
-| baseline_seed42 | 3.560 | 100k complete | Seed42 reproducibility run |
-| mol_seed42 | ~3.57 (est.) | ~62k in progress | On track toward prior 3.5702 |
-| mla | — | not yet started | MLA KV compression (arXiv:2405.04434) |
-| diff_attn | — | not yet started | Differential Attention V2 (Jan 2026) |
-| diff_mla | — | not yet started | Diff V2 + MLA composition (novel) |
-| mol_single | — | not yet started | Q2: capacity-matched single LoRA, no routing |
+| compose_seed42 | 3.5416 | 100k complete | mHC + MoL composition; best seed42 result |
+| baseline_wide_seed42 | 3.5389 | 100k complete | d_ff=1600 (param-matched to mol); Q1 ablation |
+| mhc_seed42 | 3.5482 | 100k complete | Grad norm still rising (0.80→1.37); issue unresolved |
+| mol_seed42 | 3.5497 | 100k complete | Confirms prior 3.5702 run; inner network for Phase 2 |
+| mol_single_seed42 | 3.5558 | 100k complete | Q2: routing beats single-LoRA by ~0.006 BPC |
+| baseline_seed42 | 3.5605 | 100k complete | Seed42 reproducibility run |
+| mla_seed42 | 3.7175 (step 64999) | ~67k in progress | MLA KV compression; declining fast (−0.068 per 10k steps); LR still high |
+| diff_attn_seed42 | — | not yet started | Differential Attention V2 (Jan 2026) |
+| diff_mla_seed42 | — | not yet started | Diff V2 + MLA composition (novel) |
 
 Do not compose mHC+MoL+HDC until mHC's grad norm issue is diagnosed. The rising grad norm is continuous — observed 0.80→1.37 over 100k steps with no stabilization. Diagnostic: `python phase1/train.py --config mhc --max_lr 1.5e-4 --total_steps 25000`.
 

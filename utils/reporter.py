@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 CKPT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "checkpoints")
 REPORT_PATH = os.path.join(CKPT_DIR, "report.md")
 
-PHASE1_CONFIGS  = ["baseline", "baseline_wide", "mhc", "mol", "mol_single", "compose"]
+PHASE1_CONFIGS  = ["baseline", "baseline_wide", "mhc", "mol", "mol_single", "compose", "mla", "diff_attn", "diff_mla"]
 PHASE2_CONFIGS  = [
     "hdc_rulebased", "hdc_gate", "hdc_stride", "hdc_r2", "hdc_r8",
     "hdc_e2e_isolated", "hdc_upcycle_stride", "hdc_upcycle_gate",
@@ -326,6 +326,9 @@ _CONFIG_HYPOTHESIS = {
     "mol":              ("baseline",     "Should beat baseline: MoL sparse experts add capacity without proportional cost."),
     "mol_single":       ("mol",          "Capacity-matched single-LoRA (mol_rank=64). Should lose to mol: tests whether routing gains outweigh rank concentration."),
     "compose":          ("mol",          "Should beat mol: additive gains if mHC and MoL are orthogonal."),
+    "mla":              ("baseline",     "MLA KV compression (arXiv:2405.04434). Should beat baseline if low-rank KV saves capacity. Q: does KV compression hurt or help at this scale?"),
+    "diff_attn":        ("baseline",     "Differential Attention V2 (Jan 2026). Noise-cancelling attention via doubled Q heads + sigmoid lambda. Should beat baseline."),
+    "diff_mla":         ("mla",          "Novel Diff V2 + MLA composition. Should beat both mla and diff_attn if gains are orthogonal."),
     # Phase 2 — all compared against mol (best Phase 1 config, inner network for HDC)
     "hdc_rulebased":    ("mol",          "Pipeline validation. Rule-based cosine routing. Should match or beat mol if HDC helps at all."),
     "hdc_gate":         ("hdc_rulebased","Learned e2e routing (H-Net style). Should beat hdc_rulebased if content-aware boundaries help."),

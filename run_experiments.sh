@@ -1,6 +1,6 @@
 #!/bin/bash
 # Run all MoLE toy validation experiments in sequence.
-# Covers Phase 1 (4 configs) and Phase 2 (8 HDC configs, including upcycle).
+# Covers Phase 1 (9 configs) and Phase 2 (8 HDC configs, including upcycle).
 # Every config auto-resumes from checkpoint if interrupted.
 #
 # Usage:
@@ -335,7 +335,7 @@ case "$TARGET" in
   *)
     echo "ERROR: Unknown target '$TARGET'"
     echo "Usage: bash run_experiments.sh [all|phase1|phase2|<config>]"
-    echo "Phase 1 configs: baseline mhc mol compose mla diff_attn diff_mla"
+    echo "Phase 1 configs: baseline baseline_wide mhc mol mol_single compose mla diff_attn diff_mla"
     echo "Phase 2 configs: hdc_rulebased hdc_gate hdc_stride hdc_r2 hdc_r8 hdc_e2e_isolated"
     echo "                 hdc_upcycle_stride hdc_upcycle_gate  (require mol_best.pt)"
     exit 1
