@@ -53,11 +53,11 @@ nix-shell --run "ruff check ."                  # lint
 bash run_experiments.sh                               # run all configs (Phase 1 + Phase 2)
 bash run_experiments.sh phase1                        # Phase 1 only (9 configs, d=512)
 bash run_experiments.sh phase1_scaling                # scaling study (5 configs × d=256, d=768)
-bash run_experiments.sh phase2                        # Phase 2 only (8 HDC configs)
+bash run_experiments.sh phase2                        # Phase 2 only (10 outer encoder configs)
 bash run_experiments.sh baseline                      # single Phase 1 config
-bash run_experiments.sh hdc_gate                      # single Phase 2 config
+bash run_experiments.sh outer_crl                     # single Phase 2 config
 python phase1/train.py --config mol --resume          # manual resume (Phase 1)
-python phase2/train.py --config hdc_gate --resume     # manual resume (Phase 2)
+python phase2/train.py --config outer_crl --resume    # manual resume (Phase 2)
 python utils/smoke_test.py                            # Phase 2 pre-flight health check
 python utils/smoke_test.py --check-only               # check stored smoke test result
 python utils/verify.py status                         # show verification status
@@ -73,7 +73,7 @@ python utils/reporter.py                              # regenerate checkpoints/r
 
 `run_experiments.sh` enforces two gates before any Phase 2 training:
 
-1. **Smoke test** (`utils/smoke_test.py`): 1000-step hdc_rulebased health check. Catches pipeline failures before wasting hours. Result stored in `checkpoints/smoke_test_result.json` and tied to `phase2/model.py` hash — re-runs automatically if model changes. **Hard exit on failure.**
+1. **Smoke test** (`utils/smoke_test.py`): 1000-step outer_crl health check. Catches pipeline failures before wasting hours. Result stored in `checkpoints/smoke_test_result.json` and tied to `phase2/model.py` hash — re-runs automatically if model changes. **Hard exit on failure.**
 
 2. **Staleness check** (`utils/verify.py check`): blocks training if `phase1/model.py` or `phase2/model.py` have changed since the last recorded verification.
 
