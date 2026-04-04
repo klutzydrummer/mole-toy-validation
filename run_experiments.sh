@@ -1,23 +1,23 @@
 #!/bin/bash
 # Run all MoLE toy validation experiments in sequence.
-# Covers Phase 1 (9 configs), Phase 1 scaling study, and Phase 2 (8 HDC configs).
+# Covers Phase 1 (9 configs), Phase 1 scaling study, and Phase 2 (10 outer encoder configs).
 # Every config auto-resumes from checkpoint if interrupted.
 #
 # Usage:
 #   bash run_experiments.sh                      # run everything (default)
 #   bash run_experiments.sh phase1               # Phase 1 only (9 configs, d=512)
 #   bash run_experiments.sh phase1_scaling       # scaling study: 5 configs × d=256,768
-#   bash run_experiments.sh phase2               # Phase 2 only (all 8 configs)
+#   bash run_experiments.sh phase2               # Phase 2 only (all 10 outer configs)
 #   bash run_experiments.sh baseline             # single Phase 1 config
-#   bash run_experiments.sh hdc_gate             # single Phase 2 config
+#   bash run_experiments.sh outer_crl            # single Phase 2 config
 #   bash run_experiments.sh phase2 --shutdown    # shutdown instance when done
 #
-# Phase 2 run order is enforced: hdc_rulebased always runs before hdc_gate.
-# Upcycle configs require checkpoints/mol_best.pt (run mol first).
+# Phase 2 run order: outer_crl first (validates pipeline), then outer_crl_r2,
+# then learned routing, then full-width CRL, then transformer variants, then ablations.
 #
 # On Lightning.ai free tier (T4):
 #   Phase 1: ~4-5 hours total (4 configs × ~45-75 min)
-#   Phase 2: ~8-10 hours total (8 configs × ~60-90 min)
+#   Phase 2: ~10-15 hours total (10 configs × ~60-90 min)
 #   Session interrupted? Re-run the same command — all configs auto-resume.
 
 set -e
@@ -207,7 +207,7 @@ run_phase1_scale() {
 }
 
 # ── Phase 2 smoke test ─────────────────────────────────────────────────────────
-# Runs 1000 steps of hdc_rulebased and checks health metrics defined in
+# Runs 1000 steps of outer_crl and checks health metrics defined in
 # references/components/zone_ed_pipeline.md checklist item 10.
 # BLOCKS all Phase 2 training if it fails or if phase2/model.py has changed
 # since the last passing run.
@@ -223,7 +223,7 @@ run_smoke_test() {
         return 0
     fi
 
-    echo "  Running 1000-step smoke test (hdc_rulebased)..."
+    echo "  Running 1000-step smoke test (outer_crl)..."
     if ! python utils/smoke_test.py; then
         echo ""
         echo "========================================"
@@ -316,14 +316,16 @@ case "$TARGET" in
 
     # Phase 2 — smoke test gates ALL configs, no exceptions
     run_smoke_test
-    run_phase2 hdc_rulebased
-    run_phase2 hdc_gate
-    run_phase2 hdc_stride
-    run_phase2 hdc_r2
-    run_phase2 hdc_r8
-    run_phase2 hdc_e2e_isolated
-    run_phase2 hdc_upcycle_stride 50000 "checkpoints/mol_best.pt"
-    run_phase2 hdc_upcycle_gate   50000 "checkpoints/mol_best.pt"
+    run_phase2 outer_crl             # pipeline validation first (cosine rule, no learned params)
+    run_phase2 outer_crl_r2          # sanity: 50% compression lower bound
+    run_phase2 outer_crl_learned     # learned routing on bottlenecked CRL
+    run_phase2 outer_crl_full        # full-width CRL (no bottleneck confound)
+    run_phase2 outer_crl_full_learned
+    run_phase2 outer_transformer
+    run_phase2 outer_diff_attn
+    run_phase2 outer_mla
+    run_phase2 outer_strided         # hard lower bound (no encoder)
+    run_phase2 outer_crl_learned_noste  # STE ablation
     ;;
 
   phase1)
@@ -341,14 +343,16 @@ case "$TARGET" in
   phase2)
     # smoke test gates ALL Phase 2 configs, no exceptions
     run_smoke_test
-    run_phase2 hdc_rulebased
-    run_phase2 hdc_gate
-    run_phase2 hdc_stride
-    run_phase2 hdc_r2
-    run_phase2 hdc_r8
-    run_phase2 hdc_e2e_isolated
-    run_phase2 hdc_upcycle_stride 50000 "checkpoints/mol_best.pt"
-    run_phase2 hdc_upcycle_gate   50000 "checkpoints/mol_best.pt"
+    run_phase2 outer_crl
+    run_phase2 outer_crl_r2
+    run_phase2 outer_crl_learned
+    run_phase2 outer_crl_full
+    run_phase2 outer_crl_full_learned
+    run_phase2 outer_transformer
+    run_phase2 outer_diff_attn
+    run_phase2 outer_mla
+    run_phase2 outer_strided
+    run_phase2 outer_crl_learned_noste
     ;;
 
   phase1_scaling)
@@ -384,19 +388,10 @@ case "$TARGET" in
     ;;
 
   # Individual Phase 2 configs (standard, 50k steps)
-  hdc_rulebased | hdc_gate | hdc_stride | hdc_r2 | hdc_r8 | hdc_e2e_isolated)
+  outer_crl | outer_crl_r2 | outer_crl_learned | outer_crl_full | outer_crl_full_learned | \
+  outer_transformer | outer_diff_attn | outer_mla | outer_strided | outer_crl_learned_noste)
     run_smoke_test
     run_phase2 "$TARGET"
-    ;;
-
-  # Individual upcycle configs (50k steps, requires mol_best.pt)
-  hdc_upcycle_stride)
-    run_smoke_test
-    run_phase2 hdc_upcycle_stride 50000 "checkpoints/mol_best.pt"
-    ;;
-  hdc_upcycle_gate)
-    run_smoke_test
-    run_phase2 hdc_upcycle_gate 50000 "checkpoints/mol_best.pt"
     ;;
 
   *)
@@ -405,8 +400,10 @@ case "$TARGET" in
     echo "Phase 1 configs: baseline baseline_wide mhc mol mol_single compose mla diff_attn diff_mla"
     echo "Scaling study:   bash run_experiments.sh phase1_scaling"
     echo "                 (runs baseline mla diff_attn diff_mla mol at d=256 and d=768)"
-    echo "Phase 2 configs: hdc_rulebased hdc_gate hdc_stride hdc_r2 hdc_r8 hdc_e2e_isolated"
-    echo "                 hdc_upcycle_stride hdc_upcycle_gate  (require mol_best.pt)"
+    echo "Phase 2 configs: outer_crl outer_crl_r2 outer_crl_learned"
+    echo "                 outer_crl_full outer_crl_full_learned"
+    echo "                 outer_transformer outer_diff_attn outer_mla"
+    echo "                 outer_strided outer_crl_learned_noste"
     exit 1
     ;;
 esac
@@ -422,8 +419,10 @@ import json, os, glob
 PHASE1 = ["baseline", "baseline_wide", "mhc", "mol", "mol_single", "compose",
           "mla", "diff_attn", "diff_mla"]
 PHASE2 = [
-    "hdc_rulebased", "hdc_gate", "hdc_stride", "hdc_r2", "hdc_r8",
-    "hdc_e2e_isolated", "hdc_upcycle_stride", "hdc_upcycle_gate",
+    "outer_crl", "outer_crl_r2", "outer_crl_learned",
+    "outer_crl_full", "outer_crl_full_learned",
+    "outer_transformer", "outer_diff_attn", "outer_mla",
+    "outer_strided", "outer_crl_learned_noste",
 ]
 
 def print_phase(label, configs):
@@ -445,8 +444,10 @@ def print_phase(label, configs):
 print_phase("Phase 1", PHASE1)
 print_phase("Phase 2", PHASE2)
 
-# Cross-phase comparison: best Phase 2 vs mol baseline
-mol_path = "checkpoints/mol_summary.json"
+# Cross-phase comparison: best Phase 2 vs mol_seed42 baseline
+mol_path = "checkpoints/mol_seed42_summary.json"
+if not os.path.exists(mol_path):
+    mol_path = "checkpoints/mol_summary.json"  # fallback to unseeded run
 p2_paths = [f"checkpoints/{c}_summary.json" for c in PHASE2]
 if os.path.exists(mol_path) and any(os.path.exists(p) for p in p2_paths):
     with open(mol_path) as f:

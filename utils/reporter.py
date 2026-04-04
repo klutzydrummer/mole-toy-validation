@@ -21,8 +21,10 @@ REPORT_PATH = os.path.join(CKPT_DIR, "report.md")
 
 PHASE1_CONFIGS  = ["baseline", "baseline_wide", "mhc", "mol", "mol_single", "compose", "mla", "diff_attn", "diff_mla"]
 PHASE2_CONFIGS  = [
-    "hdc_rulebased", "hdc_gate", "hdc_stride", "hdc_r2", "hdc_r8",
-    "hdc_e2e_isolated", "hdc_upcycle_stride", "hdc_upcycle_gate",
+    "outer_crl", "outer_crl_r2", "outer_crl_learned",
+    "outer_crl_full", "outer_crl_full_learned",
+    "outer_transformer", "outer_diff_attn", "outer_mla",
+    "outer_strided", "outer_crl_learned_noste",
 ]
 # Scaling study: baseline, mla, diff_attn, diff_mla, mol at d=256 and d=768.
 # Checkpoint prefix: {cfg}_d{d}_seed42 — reporter matches via find_jsonl glob.
@@ -31,13 +33,12 @@ PHASE1_SCALING_CONFIGS = [f"{c}_d{d}" for d in [256, 768] for c in _SCALING_BASE
 CONFIGS = PHASE1_CONFIGS + PHASE2_CONFIGS + PHASE1_SCALING_CONFIGS
 
 # Total training steps per config
-_TOTAL_STEPS = {c: 100000 for c in PHASE1_CONFIGS + PHASE2_CONFIGS}
-_TOTAL_STEPS["hdc_upcycle_stride"] = 50000
-_TOTAL_STEPS["hdc_upcycle_gate"]   = 50000
+_TOTAL_STEPS = {c: 100000 for c in PHASE1_CONFIGS}
+_TOTAL_STEPS.update({c: 50000 for c in PHASE2_CONFIGS})
 TOTAL_STEPS = 100000  # kept for backwards compat
 
-# Configs that use a frozen mol inner (upcycle)
-_UPCYCLE_CONFIGS = {"hdc_upcycle_stride", "hdc_upcycle_gate"}
+# No upcycle configs in Phase 2 outer encoder study
+_UPCYCLE_CONFIGS: set = set()
 
 
 # ── data loading ─────────────────────────────────────────────────────────────
@@ -235,9 +236,11 @@ def analyze_config(config):
     hdc_health = {}
     if hdc_records:
         recent_hdc = hdc_records[-10:]
-        hdc_health["compression_ratio"] = sum(r.get("compression_ratio", 0) for r in recent_hdc) / len(recent_hdc)
-        hdc_health["loss_comp"]         = sum(r.get("loss_comp", 0) for r in recent_hdc) / len(recent_hdc)
-        hdc_health["boundary_entropy"]  = sum(r.get("boundary_entropy", 0) for r in recent_hdc) / len(recent_hdc)
+        hdc_health["compression_ratio"]  = sum(r.get("compression_ratio", 0) for r in recent_hdc) / len(recent_hdc)
+        hdc_health["loss_ratio"]         = sum(r.get("loss_ratio", 0) for r in recent_hdc) / len(recent_hdc)
+        hdc_health["loss_ratio_excess"]  = sum(r.get("loss_ratio_excess", 0) for r in recent_hdc) / len(recent_hdc)
+        hdc_health["boundary_entropy"]   = sum(r.get("boundary_entropy", 0) for r in recent_hdc) / len(recent_hdc)
+        hdc_health["chunk_len_mean"]     = sum(r.get("chunk_len_mean", 0) for r in recent_hdc) / len(recent_hdc)
         hdc_health["ratio_curve"]       = sample_curve(
             [(r["step"], r["compression_ratio"]) for r in hdc_records if "compression_ratio" in r], n=15
         )
@@ -333,16 +336,17 @@ _CONFIG_HYPOTHESIS = {
     "mla":              ("baseline",     "MLA KV compression (arXiv:2405.04434). Should beat baseline if low-rank KV saves capacity. Q: does KV compression hurt or help at this scale?"),
     "diff_attn":        ("baseline",     "Differential Attention V2 (Jan 2026). Noise-cancelling attention via doubled Q heads + sigmoid lambda. Should beat baseline."),
     "diff_mla":         ("mla",          "Novel Diff V2 + MLA composition. Should beat both mla and diff_attn if gains are orthogonal."),
-    # Phase 2 — all compared against mol (best Phase 1 config, inner network for HDC)
-    "hdc_rulebased":    ("mol",          "Pipeline validation. Rule-based cosine routing. Should match or beat mol if HDC helps at all."),
-    "hdc_gate":         ("hdc_rulebased","Learned e2e routing (H-Net style). Should beat hdc_rulebased if content-aware boundaries help."),
-    "hdc_stride":       (None,           "Fixed-stride lower bound. Expected to lose to hdc_rulebased. Shows value of any routing signal."),
-    "hdc_r2":           ("hdc_gate",     "R=2 compression sweep. Less compression — may trade throughput for quality."),
-    "hdc_r8":           ("hdc_gate",     "R=8 compression sweep. More compression — tests limits of concept formation."),
-    "hdc_e2e_isolated":   (None,           "A5 comparison: gradient isolation. Expected near-random boundaries. Should match hdc_stride."),
-    # Upcycle — frozen mol inner, 50k steps
-    "hdc_upcycle_stride": (None,           "Upcycle lower bound: fixed-stride + frozen mol inner. Validates Zone E/D can learn around frozen weights."),
-    "hdc_upcycle_gate":   ("hdc_upcycle_stride", "Upcycle with learned routing. Should beat upcycle_stride if content-aware boundaries help the frozen inner."),
+    # Phase 2 — outer encoder study; run outer_crl first to validate pipeline
+    "outer_crl":              ("mol_seed42",       "Pipeline validation. Cosine-rule router (no learned params). Should beat outer_strided; gap vs mol shows cost of 4× compression."),
+    "outer_crl_r2":           ("outer_strided",    "Sanity lower bound at 50% compression. If this loses to outer_strided, the pipeline is broken regardless of encoder quality."),
+    "outer_crl_learned":      ("outer_crl",        "Learned H-Net routing on bottlenecked CRL. Should beat outer_crl if content-aware boundaries add value."),
+    "outer_crl_full":         ("outer_crl",        "Full-width CRL (no bottleneck, ~1.57M params). Isolates bottleneck as confound; should beat outer_crl on encoding quality."),
+    "outer_crl_full_learned": ("outer_crl_full",   "Full-width CRL + learned routing. Best CRL configuration."),
+    "outer_transformer":      ("outer_crl_full",   "Standard transformer encoder (~12.8M). Architecture comparison: attention vs recurrence."),
+    "outer_diff_attn":        ("outer_transformer","Diff Attn V2 encoder (~13.9M). Should beat outer_transformer — noise cancellation should improve concept quality."),
+    "outer_mla":              ("outer_transformer","MLA KV-compressed encoder (~11.5M). Q: does KV bottleneck hurt concept quality at this compression level?"),
+    "outer_strided":          (None,               "Hard lower bound (no encoder, fixed stride). Any config that loses to this has a broken pipeline."),
+    "outer_crl_learned_noste":("outer_crl_learned","STE ablation: plain confidence scaling (ste_c = c_t, no rounding to 1.0). Tests whether STE is load-bearing."),
     # Scaling study — d=256 (n_heads=4) and d=768 (n_heads=12)
     # Q: does MLA's KV compression failure improve with scale? (ratio vs absolute dimension)
     # Q: does DiffMLA compose better at larger d?
@@ -746,12 +750,14 @@ def render_report(analyses):
             ratio  = h.get("compression_ratio", 0)
             std    = h.get("ratio_std", 0)
             ent    = h.get("boundary_entropy", 0)
-            comp_l = h.get("loss_comp", 0)
+            loss_r_excess = h.get("loss_ratio_excess", 0)
+            chunk_len     = h.get("chunk_len_mean", 0)
             ratio_flag = " ⚠ UNSTABLE" if abs(ratio - target) > 0.3 * target else ""
             lines.append("**HDC Health:**")
             lines.append(f"- Compression ratio: {ratio:.3f} (target {target:.3f}, σ={std:.3f}){ratio_flag}")
             lines.append(f"- Boundary entropy: {ent:.3f} (lower = more decisive routing)")
-            lines.append(f"- Compression loss: {comp_l:.5f}")
+            lines.append(f"- Ratio loss excess: {loss_r_excess:.5f} (0.0 = converged to target)")
+            lines.append(f"- Mean chunk length: {chunk_len:.1f} tokens")
             lines.append("")
 
             if h.get("ratio_curve"):
@@ -907,6 +913,8 @@ def render_agent_report(analyses):
                 "target_ratio":      round(h.get("target_ratio", 0.25), 3),
                 "ratio_std":         round(h.get("ratio_std", 0), 4),
                 "boundary_entropy":  round(h.get("boundary_entropy", 0), 3),
+                "loss_ratio_excess": round(h.get("loss_ratio_excess", 0), 5),
+                "chunk_len_mean":    round(h.get("chunk_len_mean", 0), 1),
             }
 
         # Eval curve (step, val_bpc) — full precision, all evals
