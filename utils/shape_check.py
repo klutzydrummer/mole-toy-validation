@@ -21,7 +21,7 @@ import torchinfo
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from phase1.model import ToyTransformer
-from phase2.model import HDCModel
+from phase2.model import OuterModel
 
 # ── Full production dims ───────────────────────────────────────────────────────
 VOCAB     = 4096
@@ -151,15 +151,7 @@ def check_phase1_scaling():
 
 
 def check_phase2():
-    # Upcycle configs (hdc_upcycle_*) require a pre-trained mol checkpoint — skipped.
-    configs = [
-        "hdc_rulebased",
-        "hdc_gate",
-        "hdc_stride",
-        "hdc_r2",
-        "hdc_r8",
-        "hdc_e2e_isolated",
-    ]
+    configs = list(OuterModel.CONFIGS.keys())
 
     results = []
     for name in configs:
@@ -167,17 +159,12 @@ def check_phase2():
         print(f"Phase 2 — {name}")
         print("="*60)
         try:
-            model = HDCModel(
+            model = OuterModel(
                 config=name, d=D, n_layers=N_LAYERS, n_heads=N_HEADS,
                 vocab_size=VOCAB, seq_len=SEQ_LEN,
-                mol_rank=4,
             ).eval()
 
-            R = model.R
-            M = SEQ_LEN // R
-
             # torchinfo with tuple-output models: wrap to return only logits
-            # so summary can infer output shape; we assert both outputs manually.
             class _LogitsOnly(torch.nn.Module):
                 def __init__(self, m):
                     super().__init__()
@@ -189,7 +176,7 @@ def check_phase2():
 
             x = torch.randint(0, VOCAB, (BATCH, SEQ_LEN))
             with torch.no_grad():
-                logits, boundary_probs = model(x)
+                logits, boundary_probs, compression_ratio = model(x)
 
             # Shape contracts
             assert logits.shape == (BATCH, SEQ_LEN, VOCAB), (
@@ -206,13 +193,14 @@ def check_phase2():
             assert bp_min >= 0.0 and bp_max <= 1.0, (
                 f"boundary_probs out of [0,1]: [{bp_min:.4f}, {bp_max:.4f}]"
             )
+            cr = compression_ratio.item()
+            assert 0.0 < cr <= 1.0, f"compression_ratio out of (0, 1]: {cr:.4f}"
 
-            # Compression: exactly M = SEQ_LEN // R positions selected
-            # At init, mean boundary_prob won't equal 1/R — just report it.
             mean_bp = boundary_probs.mean().item()
             print(
-                f"\n  R={R}  M={M}  boundary_probs mean={mean_bp:.4f}"
-                f"  (target at convergence: {1.0/R:.4f})"
+                f"\n  boundary_probs mean={mean_bp:.4f}"
+                f"  compression_ratio={cr:.4f}"
+                f"  (target_rate={model.target_rate:.2f})"
             )
 
             print(
