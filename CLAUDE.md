@@ -147,8 +147,8 @@ Dataset: WikiText-103-raw, BPE tokenizer (vocab=4096, sentencepiece), seq_len=25
 | mol_seed42 | 3.5497 | 100k complete | Confirms prior 3.5702 run; inner network for Phase 2 |
 | mol_single_seed42 | 3.5558 | 100k complete | Q2: routing beats single-LoRA by ~0.006 BPC |
 | baseline_seed42 | 3.5605 | 100k complete | Seed42 reproducibility run |
-| mla_seed42 | 3.5859 | 100k complete | MLA KV compression; worse than baseline (3.5605) — KV compression hurts at this scale |
-| diff_attn_seed42 | — | not yet started | Differential Attention V2 (Jan 2026) |
+| mla_seed42 | 3.5859 | 100k complete | MLA KV compression; below baseline (3.5605); compare after diff_attn/diff_mla complete |
+| diff_attn_seed42 | 3.8190 (step 37499) | ~40k in progress | Differential Attention V2 (Jan 2026); converging faster than mla at same steps |
 | diff_mla_seed42 | — | not yet started | Diff V2 + MLA composition (novel) |
 
 Do not compose mHC+MoL+HDC until mHC's grad norm issue is diagnosed. The rising grad norm is continuous — observed 0.80→1.37 over 100k steps with no stabilization. Diagnostic: `python phase1/train.py --config mhc --max_lr 1.5e-4 --total_steps 25000`.
