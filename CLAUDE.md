@@ -4,12 +4,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this repo is
 
-Phase 1 toy validation of the MoLE architecture (Mixture-of-LoRAs Encoder) at ~5M params on WikiText-103 (BPE, vocab=4096). Phase 2 (HDC) wraps the mol inner network with Zone E and Zone D for content-aware compression.
+Phase 1 toy validation of the MoLE architecture (Mixture-of-LoRAs Encoder) on WikiText-103 (BPE, vocab=4096). Phase 2 (HDC) wraps the mol inner network with Zone E and Zone D for content-aware compression.
 
-**Phase 1 configs (9 total):**
+**Phase 1 configs (9 total, d=512 ~28M params):**
 - Core: `baseline`, `mhc`, `mol`, `compose`
 - Attention variants: `mla` (MLA KV compression, arXiv:2405.04434), `diff_attn` (Diff Attn V2, Jan 2026), `diff_mla` (novel Diff V2 + MLA composition)
 - Ablations: `baseline_wide` (widened FFN, param-matched to mol for Q1 fair comparison), `mol_single` (capacity-matched single LoRA, no routing, for Q2)
+
+**Phase 1 scaling study (10 configs: 5 × d=256, 5 × d=768):**
+- Configs: `baseline`, `mla`, `diff_attn`, `diff_mla`, `mol` at d=256 (n_heads=4, ~6M) and d=768 (n_heads=12, ~58M)
+- Question: Is MLA's KV compression failure a **ratio problem** (d_c/d=25% too high) or an **absolute dimension problem** (d_c=128 too few dims regardless of ratio)?
+- Checkpoints use prefix `{cfg}_d{d}_seed42` to avoid collision with d=512 runs
+- Run: `bash run_experiments.sh phase1_scaling`
 
 ---
 
@@ -35,7 +41,7 @@ nix-shell --run "ruff check ."                  # lint
 `shell.nix` provides CPU-only torch + torchinfo + ruff. A single forward pass at full production dims (d=512, seq=256, batch=1) costs ~200 MB RAM — safe to run locally.
 
 `shape_check.py` validates:
-- Output shape contracts for all 15 non-upcycle configs (9 Phase 1 + 6 Phase 2)
+- Output shape contracts for all 25 non-upcycle configs (9 Phase 1 + 10 scaling + 6 Phase 2)
 - No NaN/Inf in logits
 - boundary_probs in [0, 1] for all Phase 2 configs
 
@@ -45,7 +51,8 @@ nix-shell --run "ruff check ."                  # lint
 
 ```bash
 bash run_experiments.sh                               # run all configs (Phase 1 + Phase 2)
-bash run_experiments.sh phase1                        # Phase 1 only (9 configs)
+bash run_experiments.sh phase1                        # Phase 1 only (9 configs, d=512)
+bash run_experiments.sh phase1_scaling                # scaling study (5 configs × d=256, d=768)
 bash run_experiments.sh phase2                        # Phase 2 only (8 HDC configs)
 bash run_experiments.sh baseline                      # single Phase 1 config
 bash run_experiments.sh hdc_gate                      # single Phase 2 config

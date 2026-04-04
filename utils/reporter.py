@@ -24,7 +24,11 @@ PHASE2_CONFIGS  = [
     "hdc_rulebased", "hdc_gate", "hdc_stride", "hdc_r2", "hdc_r8",
     "hdc_e2e_isolated", "hdc_upcycle_stride", "hdc_upcycle_gate",
 ]
-CONFIGS = PHASE1_CONFIGS + PHASE2_CONFIGS
+# Scaling study: baseline, mla, diff_attn, diff_mla, mol at d=256 and d=768.
+# Checkpoint prefix: {cfg}_d{d}_seed42 — reporter matches via find_jsonl glob.
+_SCALING_BASES  = ["baseline", "mla", "diff_attn", "diff_mla", "mol"]
+PHASE1_SCALING_CONFIGS = [f"{c}_d{d}" for d in [256, 768] for c in _SCALING_BASES]
+CONFIGS = PHASE1_CONFIGS + PHASE2_CONFIGS + PHASE1_SCALING_CONFIGS
 
 # Total training steps per config
 _TOTAL_STEPS = {c: 100000 for c in PHASE1_CONFIGS + PHASE2_CONFIGS}
@@ -339,6 +343,19 @@ _CONFIG_HYPOTHESIS = {
     # Upcycle — frozen mol inner, 50k steps
     "hdc_upcycle_stride": (None,           "Upcycle lower bound: fixed-stride + frozen mol inner. Validates Zone E/D can learn around frozen weights."),
     "hdc_upcycle_gate":   ("hdc_upcycle_stride", "Upcycle with learned routing. Should beat upcycle_stride if content-aware boundaries help the frozen inner."),
+    # Scaling study — d=256 (n_heads=4) and d=768 (n_heads=12)
+    # Q: does MLA's KV compression failure improve with scale? (ratio vs absolute dimension)
+    # Q: does DiffMLA compose better at larger d?
+    "baseline_d256":   (None,           "Scaling anchor at d=256 (~6M params). Reference BPC for relative comparisons."),
+    "mla_d256":        ("baseline_d256","MLA at d=256: d_c=64 (25% ratio, same as d=512). If gap vs baseline shrinks at d=768, bottleneck is absolute dim, not ratio."),
+    "diff_attn_d256":  ("baseline_d256","Diff Attn at d=256. Q: does noise cancellation advantage hold, shrink, or grow with scale?"),
+    "diff_mla_d256":   ("mla_d256",     "DiffMLA at d=256. Q: does composition improve at scale vs d=512 result?"),
+    "mol_d256":        ("baseline_d256","MoL at d=256. Reference for Phase 2 inner network scaling."),
+    "baseline_d768":   (None,           "Scaling anchor at d=768 (~58M params). Reference BPC for relative comparisons."),
+    "mla_d768":        ("baseline_d768","MLA at d=768: d_c=192 (25% ratio). Compare gap vs baseline to d=256 and d=512 to isolate ratio vs absolute dim."),
+    "diff_attn_d768":  ("baseline_d768","Diff Attn at d=768. Does the advantage over baseline grow with scale?"),
+    "diff_mla_d768":   ("mla_d768",     "DiffMLA at d=768. If gap from diff_attn narrows vs d=512, KV compression is recovering at scale."),
+    "mol_d768":        ("baseline_d768","MoL at d=768. Does routing advantage over baseline change with scale?"),
 }
 
 

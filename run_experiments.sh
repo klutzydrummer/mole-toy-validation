@@ -1,11 +1,12 @@
 #!/bin/bash
 # Run all MoLE toy validation experiments in sequence.
-# Covers Phase 1 (9 configs) and Phase 2 (8 HDC configs, including upcycle).
+# Covers Phase 1 (9 configs), Phase 1 scaling study, and Phase 2 (8 HDC configs).
 # Every config auto-resumes from checkpoint if interrupted.
 #
 # Usage:
 #   bash run_experiments.sh                      # run everything (default)
-#   bash run_experiments.sh phase1               # Phase 1 only
+#   bash run_experiments.sh phase1               # Phase 1 only (9 configs, d=512)
+#   bash run_experiments.sh phase1_scaling       # scaling study: 5 configs × d=256,768
 #   bash run_experiments.sh phase2               # Phase 2 only (all 8 configs)
 #   bash run_experiments.sh baseline             # single Phase 1 config
 #   bash run_experiments.sh hdc_gate             # single Phase 2 config
@@ -158,6 +159,53 @@ run_phase1() {
         $RESUME_FLAG
 }
 
+# ── Phase 1 scaling runner ─────────────────────────────────────────────────────
+# Runs a single Phase 1 config at a non-default scale (d≠512).
+# Checkpoint prefix encodes scale: e.g. baseline_d768_seed42.
+# n_heads is always d//64 to keep head_dim=64 constant across scales.
+run_phase1_scale() {
+    local cfg="$1"
+    local d="$2"
+    local n_heads="$3"
+    local seed="${4:-42}"
+    local steps="${5:-100000}"
+    local prefix="${cfg}_d${d}_seed${seed}"
+
+    echo ""
+    echo "========================================"
+    echo "  Phase 1 Scale: $cfg  d=$d  n_heads=$n_heads  (seed=$seed)"
+    echo "========================================"
+
+    local jsonl="checkpoints/${prefix}.jsonl"
+    if [ -f "$jsonl" ]; then
+        local last_step
+        last_step=$(grep -oP '"step":\s*\K[0-9]+' "$jsonl" | tail -1)
+        if [ -n "$last_step" ] && [ "$last_step" -ge $(( steps - 1 )) ]; then
+            echo "  Already complete at step $last_step — skipping."
+            return 0
+        fi
+    fi
+
+    RESUME_FLAG=""
+    if [ -f "checkpoints/${prefix}_latest.pt" ]; then
+        echo "  Found checkpoint — resuming."
+        RESUME_FLAG="--resume"
+    fi
+
+    python phase1/train.py \
+        --config      "$cfg" \
+        --d           "$d" \
+        --n_heads     "$n_heads" \
+        --ckpt_prefix "$prefix" \
+        --total_steps "$steps" \
+        --batch_size  32 \
+        --seq_len     256 \
+        --eval_interval 2500 \
+        --log_interval  100 \
+        --seed        "$seed" \
+        $RESUME_FLAG
+}
+
 # ── Phase 2 smoke test ─────────────────────────────────────────────────────────
 # Runs 1000 steps of hdc_rulebased and checks health metrics defined in
 # references/components/zone_ed_pipeline.md checklist item 10.
@@ -303,6 +351,25 @@ case "$TARGET" in
     run_phase2 hdc_upcycle_gate   50000 "checkpoints/mol_best.pt"
     ;;
 
+  phase1_scaling)
+    # Scaling study: 5 key configs at d=256 (n_heads=4) and d=768 (n_heads=12).
+    # Checkpoint prefix: {cfg}_d{d}_seed42  (avoids collision with d=512 runs).
+    # Goal: determine whether MLA's KV compression failure is a ratio or absolute
+    # dimension problem, and whether DiffMLA composes better at scale.
+    # d=256: head_dim=64, d_c=64  (MLA bottleneck ratio same as d=512: 25%)
+    # d=768: head_dim=64, d_c=192 (MLA bottleneck ratio same as d=512: 25%)
+    run_phase1_scale baseline   256 4
+    run_phase1_scale mla        256 4
+    run_phase1_scale diff_attn  256 4
+    run_phase1_scale diff_mla   256 4
+    run_phase1_scale mol        256 4
+    run_phase1_scale baseline   768 12
+    run_phase1_scale mla        768 12
+    run_phase1_scale diff_attn  768 12
+    run_phase1_scale diff_mla   768 12
+    run_phase1_scale mol        768 12
+    ;;
+
   # Individual Phase 1 configs
   baseline | mhc | mol | compose | mla | diff_attn | diff_mla)
     run_phase1 "$TARGET"
@@ -336,6 +403,8 @@ case "$TARGET" in
     echo "ERROR: Unknown target '$TARGET'"
     echo "Usage: bash run_experiments.sh [all|phase1|phase2|<config>]"
     echo "Phase 1 configs: baseline baseline_wide mhc mol mol_single compose mla diff_attn diff_mla"
+    echo "Scaling study:   bash run_experiments.sh phase1_scaling"
+    echo "                 (runs baseline mla diff_attn diff_mla mol at d=256 and d=768)"
     echo "Phase 2 configs: hdc_rulebased hdc_gate hdc_stride hdc_r2 hdc_r8 hdc_e2e_isolated"
     echo "                 hdc_upcycle_stride hdc_upcycle_gate  (require mol_best.pt)"
     exit 1

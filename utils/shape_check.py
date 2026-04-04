@@ -1,8 +1,11 @@
 """
-Shape validation — single forward pass of every model config at full production
-dims (d=512, seq=256, batch=1) on CPU.
+Shape validation — single forward pass of every model config on CPU.
 
-Uses torchinfo for layer-by-layer shape output and asserts output contracts.
+Checks:
+  - Phase 1 (9 configs) at d=512, seq=256, batch=1
+  - Phase 1 scaling (10 configs: baseline/mla/diff_attn/diff_mla/mol at d=256 and d=768)
+  - Phase 2 (6 non-upcycle configs) at d=512
+
 Skips upcycle configs (they require a pre-trained mol checkpoint).
 
 Run locally before pushing any phase1/model.py or phase2/model.py change:
@@ -95,6 +98,58 @@ def check_phase1():
     return results
 
 
+def check_phase1_scaling():
+    """Validate Phase 1 scaling configs at d=256 (n_heads=4) and d=768 (n_heads=12)."""
+    scale_configs = [
+        # (config_name, d, n_heads)
+        ("baseline",  256, 4),
+        ("mla",       256, 4),
+        ("diff_attn", 256, 4),
+        ("diff_mla",  256, 4),
+        ("mol",       256, 4),
+        ("baseline",  768, 12),
+        ("mla",       768, 12),
+        ("diff_attn", 768, 12),
+        ("diff_mla",  768, 12),
+        ("mol",       768, 12),
+    ]
+
+    results = []
+    for name, d, n_heads in scale_configs:
+        label = f"{name}_d{d}"
+        print(f"\n{'='*60}")
+        print(f"Phase 1 Scaling — {label}  (d={d}, n_heads={n_heads})")
+        print("="*60)
+        try:
+            model = ToyTransformer(
+                config=name, d=d, n_layers=N_LAYERS, n_heads=n_heads,
+                vocab_size=VOCAB, max_len=SEQ_LEN + 64,
+                mol_rank=8,
+            ).eval()
+
+            x = torch.randint(0, VOCAB, (BATCH, SEQ_LEN))
+            with torch.no_grad():
+                out = model(x)
+
+            assert out.shape == (BATCH, SEQ_LEN, VOCAB), (
+                f"Expected ({BATCH}, {SEQ_LEN}, {VOCAB}), got {out.shape}"
+            )
+            assert not torch.isnan(out).any(), "NaN in output logits"
+            assert not torch.isinf(out).any(), "Inf in output logits"
+
+            n_params = sum(p.numel() for p in model.parameters())
+            print(f"\n[PASS] {label}: output {tuple(out.shape)}  params={n_params:,}")
+            results.append((label, True, None))
+
+        except Exception as e:
+            import traceback
+            print(f"\n[FAIL] {label}: {e}")
+            traceback.print_exc()
+            results.append((label, False, str(e)))
+
+    return results
+
+
 def check_phase2():
     # Upcycle configs (hdc_upcycle_*) require a pre-trained mol checkpoint — skipped.
     configs = [
@@ -181,9 +236,10 @@ def main():
     print(f"  device: CPU  |  torch: {torch.__version__}")
 
     p1 = check_phase1()
+    p1s = check_phase1_scaling()
     p2 = check_phase2()
 
-    all_results = p1 + p2
+    all_results = p1 + p1s + p2
     passed = [r for r in all_results if r[1]]
     failed = [r for r in all_results if not r[1]]
 

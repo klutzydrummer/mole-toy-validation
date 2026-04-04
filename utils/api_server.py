@@ -35,11 +35,10 @@ import math
 import os
 import traceback
 from pathlib import Path
-from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Depends, Query, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 
@@ -82,8 +81,8 @@ async def _http_exc(request: Request, exc: HTTPException):
 # ── Auth ──────────────────────────────────────────────────────────────────────
 
 def require_token(
-    creds: Optional[HTTPAuthorizationCredentials] = Depends(_bearer),
-    token: Optional[str] = Query(None, include_in_schema=False),
+    creds: HTTPAuthorizationCredentials | None = Depends(_bearer),
+    token: str | None = Query(None, include_in_schema=False),
 ):
     if not API_TOKEN:
         raise HTTPException(status_code=500, detail="TRAINING_API_TOKEN not configured on server")
@@ -94,7 +93,7 @@ def require_token(
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _read_json_file(path: Path) -> Optional[dict | list]:
+def _read_json_file(path: Path) -> dict | list | None:
     """Read a JSON file defensively. Returns None on any error."""
     try:
         text = path.read_text(encoding="utf-8")

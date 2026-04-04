@@ -98,7 +98,7 @@ def train(config: str, d: int = 512, n_layers: int = 8, n_heads: int = 8,
           resume: bool = False, no_compile: bool = False,
           tokenizer: str = "bpe", dataset: str = "wikitext103",
           teamspace: str = "mole-toy-validation-project",
-          seed: int = 42):
+          seed: int = 42, ckpt_prefix: str = ""):
 
     print(f"\n{'='*60}")
     print(f"Phase 1 Training: config={config}")
@@ -157,7 +157,7 @@ def train(config: str, d: int = 512, n_layers: int = 8, n_heads: int = 8,
     start_step = 0
     best_val_bpc = float("inf")
     os.makedirs(ckpt_dir, exist_ok=True)
-    ckpt_prefix = f"{config}_seed{seed}"
+    ckpt_prefix = ckpt_prefix or f"{config}_seed{seed}"
     resume_path = os.path.join(ckpt_dir, f"{ckpt_prefix}_latest.pt")
 
     if resume and os.path.exists(resume_path):
@@ -186,7 +186,7 @@ def train(config: str, d: int = 512, n_layers: int = 8, n_heads: int = 8,
             print(f"torch.compile failed ({e}), continuing without it")
 
     # Local JSONL logger (always active)
-    logger = TrainLogger(ckpt_dir, run_name=f"{config}_seed{seed}")
+    logger = TrainLogger(ckpt_dir, run_name=ckpt_prefix)
 
     # Lightning.ai experiment tracker (active when running in a Studio)
     lit = make_lit_logger(name=f"phase1-{config}", teamspace=teamspace)
@@ -353,6 +353,9 @@ if __name__ == "__main__":
     parser.add_argument("--d_ff", type=int, default=None,
                         help="FFN hidden dim override (default: auto = d*8/3 rounded to 64). "
                              "Use 1600 for baseline_wide to match mol total params.")
+    parser.add_argument("--ckpt_prefix", type=str, default="",
+                        help="Override checkpoint/JSONL file prefix (default: {config}_seed{seed}). "
+                             "Use for scale variants, e.g. 'baseline_d768_seed42'.")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--no_compile", action="store_true")
     parser.add_argument("--seed", type=int, default=42,
