@@ -187,6 +187,32 @@ class CRLEncoder(nn.Module):
         return self.up_proj(h)
 
 
+class CRLEncoderFull(nn.Module):
+    """
+    Full-width CRL encoder: 3× CausalRecurrenceLayer directly at d (no bottleneck).
+    No down/up projection — operates at full model dimension throughout.
+
+    Param count at d=512: 3 × ~525K ≈ 1.57M params.
+    Compare to CRLEncoder (bottlenecked at d//4=128): ~282K params.
+    Compare to transformer encoders: ~11–14M params.
+
+    Use this config when you want CRL without the bottleneck as a confound.
+    """
+
+    def __init__(self, d: int):
+        super().__init__()
+        self.recurrence = nn.ModuleList([
+            CausalRecurrenceLayer(d, log_a_init=3.0) for _ in range(3)
+        ])
+        self.norm_out = RMSNorm(d)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """x: [B, L, d] → [B, L, d]"""
+        for rec in self.recurrence:
+            x = rec(x)
+        return self.norm_out(x)
+
+
 class TransformerEncoder(nn.Module):
     """
     Standard causal transformer encoder (baseline attention).
@@ -359,17 +385,33 @@ class BoundaryRouter(nn.Module):
         M_max         = int(counts.max().item())
         M_max         = max(M_max, 1)                          # at least 1 slot
 
-        # Build padded boundary_idx and concept_mask
-        # Use a gather approach: for each batch element, collect the True indices
-        # and pad with 0 to length M_max.
-        boundary_idx  = torch.zeros(B, M_max, device=enc.device, dtype=torch.long)
-        concept_mask  = torch.zeros(B, M_max, device=enc.device, dtype=torch.bool)
+        # Build padded boundary_idx and concept_mask — fully vectorised, no Python loop.
+        # Compile-friendly: no data-dependent control flow, no per-element Python ops.
+        #
+        # Strategy: assign each boundary position a 0-indexed rank within its row.
+        #   rank[b, l] = cumsum(b_long)[b, l] * b_long[b, l]
+        #              = 1-indexed rank if boundary, 0 if non-boundary.
+        # Non-boundary positions (rank=0) must not clobber slot 0.
+        # Fix: route non-boundary positions to a dummy slot M_max and discard it.
+        #   slot_safe[b, l] = rank[b,l]-1  if boundary   (0-indexed valid slot)
+        #                   = M_max        if non-boundary (discarded dummy slot)
+        # Allocate M_max+1 slots, scatter, then trim the last slot.
+        b_long   = boundary_mask.long()                         # [B, L]
+        rank     = b_long.cumsum(dim=1) * b_long                # [B, L] 1-indexed rank, 0 if not boundary
+        slot_safe = torch.where(
+            boundary_mask,
+            rank - 1,                                           # 0-indexed slot for boundaries
+            torch.full_like(rank, M_max),                       # dummy slot for non-boundaries
+        )                                                        # [B, L]
 
-        for b in range(B):
-            idx_b = boundary_mask[b].nonzero(as_tuple=False).squeeze(-1)  # [M_b]
-            M_b   = idx_b.shape[0]
-            boundary_idx[b, :M_b] = idx_b
-            concept_mask[b, :M_b] = True
+        pos = torch.arange(L, device=enc.device).unsqueeze(0).expand(B, -1)  # [B, L]
+        # Allocate M_max+1 slots; the last (M_max) is the dummy absorbing non-boundary writes.
+        _bidx = torch.zeros(B, M_max + 1, device=enc.device, dtype=torch.long)
+        _cmsk = torch.zeros(B, M_max + 1, device=enc.device, dtype=torch.bool)
+        _bidx.scatter_(1, slot_safe, pos)
+        _cmsk.scatter_(1, slot_safe, boundary_mask)
+        boundary_idx = _bidx[:, :M_max]                         # [B, M_max] — drop dummy slot
+        concept_mask = _cmsk[:, :M_max]                         # [B, M_max]
 
         # Gather concept tokens at boundary positions
         concept_tokens = enc.gather(
@@ -414,8 +456,9 @@ class SimpleDecoder(nn.Module):
     lm_head is weight-tied to embed — applied in OuterModel.forward.
     """
 
-    def __init__(self, d: int):
+    def __init__(self, d: int, use_ste: bool = True):
         super().__init__()
+        self.use_ste = use_ste
         # Plain linear skip connection (H-Net Eq. 3); initialized near-zero in OuterModel.__init__
         self.residual_proj = nn.Linear(d, d, bias=False)
 
@@ -469,9 +512,13 @@ class SimpleDecoder(nn.Module):
         # c_t = p_t if b_t=1, (1-p_t) if b_t=0 — quantifies router confidence
         # ste(c_t) = c_t + stopgrad(1-c_t) = 1.0 in fwd, gradient flows through c_t
         # Incentivizes confident decisions: uncertain router (p≈0.5) gets output scaled by 0.5
-        b_float   = boundary_mask.float()                               # [B, L]
-        c_t       = b_float * boundary_probs + (1.0 - b_float) * (1.0 - boundary_probs)
-        ste_c     = c_t + (1.0 - c_t).detach()                        # [B, L] = 1.0 in fwd
+        # use_ste=False: ablation — use plain c_t without STE (no rounding to 1.0 in fwd)
+        b_float = boundary_mask.float()                                 # [B, L]
+        c_t     = b_float * boundary_probs + (1.0 - b_float) * (1.0 - boundary_probs)
+        if self.use_ste:
+            ste_c = c_t + (1.0 - c_t).detach()                        # [B, L] = 1.0 in fwd
+        else:
+            ste_c = c_t                                                 # plain confidence scaling
         upsampled = ste_c.unsqueeze(-1) * plugback                     # [B, L, d]
 
         # ── Step 4: Residual from Zone E skip (H-Net Eq. 3) ─────────────────
@@ -502,12 +549,27 @@ class OuterModel(nn.Module):
     """
 
     CONFIGS = {
-        "outer_crl":         dict(encoder="crl",         router="cosine_rule"),
-        "outer_crl_learned": dict(encoder="crl",         router="learned_e2e"),
-        "outer_transformer": dict(encoder="transformer",  router="learned_e2e"),
-        "outer_diff_attn":   dict(encoder="diff_attn",   router="learned_e2e"),
-        "outer_mla":         dict(encoder="mla",         router="learned_e2e"),
-        "outer_strided":     dict(encoder="identity",    router="fixed_stride"),
+        # ── Core study configs ────────────────────────────────────────────────
+        "outer_crl":              dict(encoder="crl",          router="cosine_rule"),
+        "outer_crl_learned":      dict(encoder="crl",          router="learned_e2e"),
+        "outer_crl_full":         dict(encoder="crl_full",     router="cosine_rule"),
+        "outer_crl_full_learned": dict(encoder="crl_full",     router="learned_e2e"),
+        "outer_transformer":      dict(encoder="transformer",  router="learned_e2e"),
+        "outer_diff_attn":        dict(encoder="diff_attn",    router="learned_e2e"),
+        "outer_mla":              dict(encoder="mla",          router="learned_e2e"),
+        "outer_strided":          dict(encoder="identity",     router="fixed_stride"),
+        # ── Ablations ─────────────────────────────────────────────────────────
+        "outer_crl_learned_noste": dict(encoder="crl",         router="learned_e2e",
+                                        use_ste=False),
+        "outer_crl_r2":            dict(encoder="crl",         router="cosine_rule",
+                                        target_rate=0.5),
+        # Encoder param counts at d=512 (for cross-config interpretation):
+        #   outer_crl / outer_crl_learned          CRLEncoder (d//4=128 bottleneck):  ~282K
+        #   outer_crl_full / outer_crl_full_learned CRLEncoderFull (d=512, no proj):  ~1.57M
+        #   outer_transformer                       TransformerEncoder (4×d=512):     ~12.8M
+        #   outer_diff_attn                         DiffAttnEncoder (4×d=512):        ~13.9M
+        #   outer_mla                               MLAEncoder (4×d=512):             ~11.5M
+        # These are architecture-vs-architecture comparisons, NOT param-matched.
     }
 
     def __init__(
@@ -527,7 +589,9 @@ class OuterModel(nn.Module):
 
         cfg = self.CONFIGS[config]
         self.config_name = config
-        self.target_rate = target_rate
+        # Config can override target_rate (e.g. outer_crl_r2 uses 0.5)
+        self.target_rate = cfg.get("target_rate", target_rate)
+        self.use_ste     = cfg.get("use_ste", True)
         self.d           = d
 
         # Shared embedding (weight-tied to lm_head)
@@ -537,6 +601,8 @@ class OuterModel(nn.Module):
         encoder_type = cfg["encoder"]
         if encoder_type == "crl":
             self.encoder = CRLEncoder(d=d)
+        elif encoder_type == "crl_full":
+            self.encoder = CRLEncoderFull(d=d)
         elif encoder_type == "transformer":
             self.encoder = TransformerEncoder(d=d, n_heads=n_heads,
                                               n_layers_outer=n_layers_outer,
@@ -556,10 +622,10 @@ class OuterModel(nn.Module):
 
         # Threshold-based boundary router
         self.router = BoundaryRouter(d=d, routing=cfg["router"],
-                                     target_rate=target_rate)
+                                     target_rate=self.target_rate)
 
         # Simple decoder (no inner transformer, no CRL decoder)
-        self.decoder = SimpleDecoder(d=d)
+        self.decoder = SimpleDecoder(d=d, use_ste=self.use_ste)
 
         # LM head (weight-tied)
         self.lm_head        = nn.Linear(d, vocab_size, bias=False)

@@ -244,7 +244,7 @@ def train(
     ]
     if _router_params:
         _param_groups.append(
-            {"params": _router_params, "peak_lr": router_lr, "lr": router_lr, "weight_decay": 0.1}
+            {"params": _router_params, "peak_lr": router_lr, "lr": router_lr, "weight_decay": 0.0}
         )
     optimizer = torch.optim.AdamW(
         _param_groups, betas=(0.9, 0.95), fused=(device.type == "cuda"),
@@ -292,6 +292,11 @@ def train(
         })
         print("LightningLogger active — metrics streaming to Teamspace")
 
+    # Alpha warmup: ramp ratio loss from 0 → alpha over first alpha_warmup_steps.
+    # Prevents ratio loss from pushing W_q/W_k before the encoder has learned
+    # meaningful representations (random embeddings produce p_t ≈ 0.5 everywhere).
+    alpha_warmup_steps = 2000
+
     model.train()
     train_iter      = iter(train_loader)
     start_time      = time.time()
@@ -320,11 +325,13 @@ def train(
             pg["lr"] = pg["peak_lr"] * lr_scale
 
         optimizer.zero_grad(set_to_none=True)
+        # Alpha warmup: no-op when effective_alpha=0 (outer_crl, outer_strided)
+        alpha_step = effective_alpha * min(1.0, step / max(1, alpha_warmup_steps))
         with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
             logits, bp, cr = model(x)
             loss_ntp   = F.cross_entropy(logits.view(-1, logits.size(-1)), y.view(-1))
             loss_r     = ratio_loss(bp, _unwrap(model).target_rate)
-            loss       = loss_ntp + effective_alpha * loss_r
+            loss       = loss_ntp + alpha_step * loss_r
 
         if use_grad_scaler:
             scaler.scale(loss).backward()
@@ -337,6 +344,13 @@ def train(
             grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0).item()
             optimizer.step()
 
+        # Chunk length stats: L / M per sequence (approximate — exact requires
+        # diff of boundary positions, but L/count captures the mean chunk length)
+        with torch.no_grad():
+            bmask_count = (bp.detach() >= 0.5).float().sum(dim=1).clamp(min=1)  # [B]
+            chunk_len_mean = (bp.shape[1] / bmask_count).mean().item()
+            chunk_len_var  = (bp.shape[1] / bmask_count).var().item()
+
         log_loss_accum += loss_ntp.item()
         log_comp_accum += loss_r.item()
         log_ent_accum  += boundary_entropy(bp)
@@ -346,6 +360,7 @@ def train(
             avg_loss = log_loss_accum / log_count
             avg_comp = log_comp_accum / log_count
             avg_ent  = log_ent_accum  / log_count
+            avg_excess = max(0.0, avg_comp - 1.0)   # 0.0 when ratio loss has converged
             comp_ratio = cr.detach().item()
 
             logger.log_step(step, avg_loss, lr, grad_norm)
@@ -354,12 +369,16 @@ def train(
                 f.write(json.dumps({
                     "step": step, "type": "hdc",
                     "loss_ratio": avg_comp,
+                    "loss_ratio_excess": avg_excess,
                     "compression_ratio": comp_ratio,
                     "boundary_entropy": avg_ent,
+                    "chunk_len_mean": chunk_len_mean,
+                    "chunk_len_var": chunk_len_var,
                 }) + "\n")
 
             logger.print_step(step, avg_loss, lr, grad_norm, interval=1)
-            print(f"    comp={comp_ratio:.3f}  loss_ratio={avg_comp:.5f}  ent={avg_ent:.3f}")
+            print(f"    comp={comp_ratio:.3f}  loss_ratio_excess={avg_excess:.5f}"
+                  f"  ent={avg_ent:.3f}  chunk_len={chunk_len_mean:.1f}±{chunk_len_var**.5:.1f}")
 
             if lit is not None:
                 _lit_log(lit, {
@@ -367,7 +386,10 @@ def train(
                     "train/lr": lr, "train/grad_norm": grad_norm,
                     "hdc/compression_ratio": comp_ratio,
                     "hdc/loss_ratio": avg_comp,
+                    "hdc/loss_ratio_excess": avg_excess,
                     "hdc/boundary_entropy": avg_ent,
+                    "hdc/chunk_len_mean": chunk_len_mean,
+                    "hdc/chunk_len_var": chunk_len_var,
                 }, step=step)
 
             log_loss_accum = log_comp_accum = log_ent_accum = log_count = 0
@@ -382,12 +404,22 @@ def train(
 
             b_bpc, m_bpc = evaluate_per_position(model, val_loader, device,
                                                   amp_dtype=amp_dtype)
+            # boundary_bpc > midchunk_bpc is geometrically expected (fresh concept token
+            # at boundaries has less smoothed context). Diagnostic value is in the trend
+            # over training and in cross-config comparison, not the absolute sign.
             print(f"  >>> boundary BPC: {b_bpc:.4f}  mid-chunk BPC: {m_bpc:.4f}"
                   f"  delta: {m_bpc - b_bpc:+.4f}")
+
+            # residual_proj norm: tracks whether the skip connection stays suppressed
+            # (near 0 at init) or grows to bypass concept tokens over training.
+            res_norm = _unwrap(model).decoder.residual_proj.weight.norm().item()
+            print(f"  >>> residual_proj norm: {res_norm:.4f}")
+
             with open(os.path.join(ckpt_dir, f"{run_name}.jsonl"), "a") as f:
                 f.write(json.dumps({
                     "step": step, "type": "pos_loss",
                     "boundary_bpc": b_bpc, "midchunk_bpc": m_bpc,
+                    "residual_proj_norm": res_norm,
                 }) + "\n")
 
             if lit is not None:
@@ -395,6 +427,7 @@ def train(
                     "val/loss": val_loss, "val/bpc": val_bpc,
                     "hdc/val_compression_ratio": val_ratio,
                     "hdc/boundary_bpc": b_bpc, "hdc/midchunk_bpc": m_bpc,
+                    "hdc/residual_proj_norm": res_norm,
                 }, step=step)
 
             if val_bpc < best_val_bpc:

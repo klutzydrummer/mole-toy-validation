@@ -2,8 +2,8 @@
 """
 Phase 2 smoke test — MUST PASS before any Phase 2 training run is allowed.
 
-Runs 1000 training steps of hdc_rulebased (no learned router, simplest config)
-then checks the health metrics from zone_ed_pipeline.md checklist item 10.
+Runs 1000 training steps of outer_crl (cosine_rule router, no learned params —
+simplest config) then checks the health metrics from zone_ed_pipeline.md item 10.
 Takes ~3 minutes on a T4 GPU. Catches pipeline failures before they waste hours.
 
 CHECKS (all must pass):
@@ -12,12 +12,10 @@ CHECKS (all must pass):
 
   2. Encoder diversity: encoder_out.var(dim=1).mean() > 1e-4
      Catches: CRL over-smoothing — Zone E producing near-identical representations
-     across all L positions, making the inner transformer blind (root cause of the
-     9.7 BPC plateau in the initial Phase 2 runs).
+     across all L positions (root cause of the 9.7 BPC plateau in the initial runs).
 
   3. Concept diversity: concept_tokens.var(dim=1).mean() > 1e-4
-     Catches: inner transformer receiving near-identical concept token inputs,
-     which causes attention to degenerate and concept_out to be uniform.
+     Catches: all concept tokens being near-identical (degenerate boundary selection).
 
   4. No NaN or inf in any metric at any step.
 
@@ -80,8 +78,12 @@ def _diversity_metrics(model, val_loader, device) -> dict:
     """
     Forward pass to measure encoder_out and concept_token diversity.
     Returns dict with encoder_diversity and concept_diversity.
-    Both are variance across the sequence dimension (L or M), averaged over
-    batch and feature dimensions.
+    Both are variance across the sequence dimension (L or M_max), averaged
+    over batch and feature dimensions.
+
+    Uses OuterModel API:
+      encoder_out = model.encoder(embed(x))         [B, L, d]
+      concept_tokens from router = model.router(encoder_out)[0]   [B, M_max, d]
     """
     raw = _unwrap(model)
     raw.eval()
@@ -91,13 +93,13 @@ def _diversity_metrics(model, val_loader, device) -> dict:
 
     with torch.autocast(device_type=device.type, dtype=torch.float16,
                         enabled=(device.type == "cuda")):
-        h = raw.embed(x)                                       # [B, L, d]
-        concept_tokens, encoder_out, _, _, _ = raw.zone_e(h)  # [B, M, d], [B, L, d]
+        h = raw.embed(x)                                        # [B, L, d]
+        encoder_out = raw.encoder(h)                            # [B, L, d]
+        concept_tokens, _, _, _, _ = raw.router(encoder_out)   # [B, M_max, d], ...
 
     # Variance across sequence positions, averaged over batch and d
-    # .var(dim=1): [B, d] — per-channel variance across positions
-    enc_div = encoder_out.float().var(dim=1).mean().item()     # scalar
-    con_div = concept_tokens.float().var(dim=1).mean().item()  # scalar
+    enc_div = encoder_out.float().var(dim=1).mean().item()      # scalar
+    con_div = concept_tokens.float().var(dim=1).mean().item()   # scalar
 
     raw.train()
     return {"encoder_diversity": enc_div, "concept_diversity": con_div}
@@ -105,11 +107,11 @@ def _diversity_metrics(model, val_loader, device) -> dict:
 
 def run_smoke_test(steps: int = 1000, batch_size: int = 32) -> dict:
     """
-    Train hdc_rulebased for `steps` steps and evaluate health metrics.
+    Train outer_crl for `steps` steps and evaluate health metrics.
     Returns a result dict: {"pass": bool, "checks": {...}, "metrics": {...}}.
     """
     sys.path.insert(0, str(REPO_ROOT))
-    from phase2.model import HDCModel
+    from phase2.model import OuterModel
     from utils.data import get_dataloader, get_vocab_size, set_dataset, set_tokenizer
 
     set_dataset("wikitext103")
@@ -121,10 +123,10 @@ def run_smoke_test(steps: int = 1000, batch_size: int = 32) -> dict:
 
     print(f"  device: {device}  vocab: {vocab_size}  steps: {steps}  batch: {batch_size}")
 
-    model = HDCModel(
-        config="hdc_rulebased", d=512, n_layers=8, n_heads=8,
+    model = OuterModel(
+        config="outer_crl", d=512, n_layers=8, n_heads=8,
         vocab_size=vocab_size, seq_len=256,
-        n_experts=8, mol_rank=8, mol_top_k=2,
+        target_rate=0.25,
     ).to(device)
 
     optimizer = torch.optim.AdamW(
@@ -157,7 +159,7 @@ def run_smoke_test(steps: int = 1000, batch_size: int = 32) -> dict:
         optimizer.zero_grad(set_to_none=True)
 
         with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=use_amp):
-            logits, bp = model(x)
+            logits, bp, cr = model(x)   # OuterModel returns 3-tuple
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), y.view(-1))
 
         if not math.isfinite(loss.item()):
@@ -180,6 +182,7 @@ def run_smoke_test(steps: int = 1000, batch_size: int = 32) -> dict:
             elapsed = time.time() - t0
             eta = elapsed / (step + 1) * (steps - step - 1)
             print(f"  step {step+1:4d}/{steps}  loss={loss.item():.4f}  "
+                  f"comp={cr.item():.3f}  "
                   f"elapsed={elapsed:.0f}s  eta={eta:.0f}s")
 
     elapsed = time.time() - t0
@@ -236,7 +239,8 @@ def run_smoke_test(steps: int = 1000, batch_size: int = 32) -> dict:
         f"Zone E encoder_out is diverse  (var={diversity['encoder_diversity']:.2e} > {ENCODER_DIVERSITY_MIN:.0e})",
         checks["encoder_diversity"],
         "CRITICAL: Zone E CRL over-smoothing — all encoder positions look the same. "
-        "Inner transformer cannot learn. See causal_recurrence.md and zone_ed_pipeline.md item 10.",
+        "Concept tokens will be indistinguishable. See causal_recurrence.md and "
+        "zone_ed_pipeline.md item 10.",
     )
 
     # Check 5: concept diversity
@@ -247,8 +251,8 @@ def run_smoke_test(steps: int = 1000, batch_size: int = 32) -> dict:
     _print_check(
         f"Concept tokens are diverse  (var={diversity['concept_diversity']:.2e} > {CONCEPT_DIVERSITY_MIN:.0e})",
         checks["concept_diversity"],
-        "CRITICAL: Concept tokens are near-identical — inner transformer attention "
-        "will degenerate. Fix Zone E before running full Phase 2.",
+        "CRITICAL: Concept tokens are near-identical — SimpleDecoder EMA will collapse "
+        "to a single repeated vector. Fix Zone E before running full Phase 2.",
     )
 
     all_pass = all(checks.values())
@@ -268,7 +272,6 @@ def _print_check(label: str, passed: bool, detail: str = "") -> None:
     mark = "PASS" if passed else "FAIL"
     print(f"  [{mark}] {label}")
     if not passed and detail:
-        # Wrap detail at 80 chars with indent
         words = detail.split()
         line = "         "
         for word in words:

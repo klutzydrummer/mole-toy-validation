@@ -114,8 +114,8 @@ Authoritative correctness criteria live in `references/components/`. Before touc
 ```
 phase1/model.py     ToyTransformer: baseline / baseline_wide / mhc / mol / mol_single / compose / mla / diff_attn / diff_mla
 phase1/train.py     Training loop: AMP, torch.compile, resume, eval
-phase2/model.py     HDCModel: ZoneE + InnerTransformer + ZoneD
-phase2/train.py     Dual-loss training loop (loss_ntp + λ_comp * loss_comp)
+phase2/model.py     OuterModel: pluggable ZoneE + BoundaryRouter + SimpleDecoder (10 configs)
+phase2/train.py     H-Net ratio loss (Eq. 10), alpha warmup, boundary/chunk metrics
 utils/data.py       Data loader: TokenDataset, get_dataloader (WikiText-103 default)
 utils/metrics.py    TrainLogger (JSONL), ParamCounter, ce_to_bpc
 utils/smoke_test.py Phase 2 pre-flight: 1000-step health check (encoder diversity, loss reduction)
@@ -173,15 +173,32 @@ Do not compose mHC+MoL+HDC until mHC's grad norm issue is diagnosed. The rising 
 
 ## Phase 2 Status and Key Decisions
 
-A1 gate ablation: does content-aware compression at R=4 improve BPC over mol alone (3.5702)?
+**Goal:** Isolate and study the outer encoder — which architecture produces the best concept tokens? Composition with an inner network moves to Phase 3.
 
-**IMPORTANT: Run hdc_rulebased first, always. It validates the pipeline before learned routing. If it doesn't improve on mol, the pipeline is broken — fix before proceeding.**
+**Run outer_crl first, always.** It uses the cosine_rule router (no learned params) and validates the pipeline before adding learned routing. If it doesn't improve on a strided baseline, the pipeline is broken.
 
-Run order: `hdc_rulebased` → `hdc_gate` → `hdc_stride` → `hdc_r2/r8` (after A1 passes) → upcycle configs
+**Run order:** `outer_crl` → `outer_crl_r2` (sanity) → `outer_crl_learned` → `outer_crl_full` / `outer_crl_full_learned` → transformer variants → ablations
 
-Phase 2 training: 50k steps. Upcycle configs require `checkpoints/mol_best.pt`.
+Phase 2 training: 50k steps, alpha=0.03 (H-Net ratio loss), alpha warmup over first 2k steps.
 
-A1 success: `hdc_gate` val BPC < 3.5702, compression ratio stable near 0.25, boundary_entropy decreasing.
+**10 configs (OuterModel.CONFIGS):**
 
-Per-step metrics logged: `compression_ratio`, `loss_comp`, `boundary_entropy`
-Per-eval metrics logged: `boundary_bpc`, `mid_chunk_bpc`
+| Config | Encoder | Router | Notes |
+|--------|---------|--------|-------|
+| `outer_crl` | CRL (282K, bottlenecked) | cosine_rule | Baseline — run first |
+| `outer_crl_r2` | CRL | cosine_rule | target_rate=0.5 — sanity lower bound |
+| `outer_crl_learned` | CRL | learned_e2e | Learned routing on bottlenecked CRL |
+| `outer_crl_full` | CRL (1.57M, full-width) | cosine_rule | No bottleneck confound |
+| `outer_crl_full_learned` | CRL full | learned_e2e | Full CRL + learned routing |
+| `outer_transformer` | Transformer (12.8M) | learned_e2e | Standard attention |
+| `outer_diff_attn` | Diff Attn V2 (13.9M) | learned_e2e | Noise-cancelling attention |
+| `outer_mla` | MLA (11.5M) | learned_e2e | KV-compressed attention |
+| `outer_strided` | Identity | fixed_stride | Hard lower bound (no encoder) |
+| `outer_crl_learned_noste` | CRL | learned_e2e | STE ablation (use_ste=False) |
+
+**Encoder capacity note:** These are architecture-vs-architecture comparisons at d=512, NOT param-matched. CRL (bottlenecked) is 45× smaller than transformer variants. `outer_crl_full` (1.57M) removes the bottleneck confound. Differences in BPC may reflect capacity, not architecture quality.
+
+**Per-step metrics logged:** `compression_ratio`, `loss_ratio`, `loss_ratio_excess` (0.0=converged), `boundary_entropy`, `chunk_len_mean`, `chunk_len_var`
+**Per-eval metrics logged:** `boundary_bpc`, `midchunk_bpc`, `residual_proj_norm`
+
+Note: `boundary_bpc > midchunk_bpc` is geometrically expected (fresh concept token has less smoothed context). Diagnostic value is in the trend over training and cross-config comparison, not the absolute sign.
