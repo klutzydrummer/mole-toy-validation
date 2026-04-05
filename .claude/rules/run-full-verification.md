@@ -43,9 +43,13 @@ full verification run is the pointer update coupled with an actual correctness c
 
 For each component spec in `references/components/`, dispatch a subagent that:
 
-1. **Reads** the component spec (`references/components/<component>.md`)
-2. **Reads** every source file cited in the spec's "Sources" table (`references/sources/papers/<paper>.md` and `references/sources/code/<file>.py`)
-3. **Reads** the component implementation file(s) listed in the table below
+1. **Reads** the component spec: `references/components/<component>.md`
+   - The spec contains a "Sources" table — this tells you which Phase A files to read next.
+2. **Reads** every source file listed in the spec's "Sources" table:
+   `references/sources/papers/<paper>.md` and `references/sources/code/<file>.py`
+3. **Reads** the implementation files for this component:
+   Run `python utils/verify.py status` — the `TRACKED_COMPONENTS` dict in `utils/verify.py`
+   maps each component name to its implementation files.
 4. **Cross-checks**:
    - Every equation in "Authoritative equations" — is it verbatim from the cited paper?
    - Every code snippet in "Reference implementation" — is it verbatim from the cited source file?
@@ -56,19 +60,7 @@ For each component spec in `references/components/`, dispatch a subagent that:
    - Overall verdict: PASS / FAIL / PASS with issues
    - Per-claim status: VERIFIED / INCORRECT / NOT FOUND
    - For any FAIL: exact location of the discrepancy (spec line vs code line vs source line)
-
-### Components to verify
-
-| Component spec | Sources | Implementation files |
-|---------------|---------|---------------------|
-| `causal_recurrence.md` | `griffin_2402.19427.md`, `griffin_rglru.py` | `phase2/components/causal_recurrence.py` |
-| `zone_ed_pipeline.md` | `hnet_2507.07955.md`, `hnet_boundary.py`, `dlcm.md` | `phase2/components/zone_e.py`, `phase2/components/zone_d.py` |
-| `boundary_router.md` | `hnet_2507.07955.md`, `hnet_boundary.py`, `dlcm.md` | `phase2/components/boundary_router.py` |
-| `mol_ffn.md` | `deepseek_v3_2412.19437.md`, `deepseek_v3_moe.py` | `phase1/components/mol_ffn.py`, `phase2/components/zone_e.py` |
-| `mhc.md` | `mhc_2512.24880.md`, `mhc_hyper_connections.py` | `phase1/components/mhc.py` |
-| `attention_rope_norms.md` | `rope_2104.09864.md`, `rmsnorm_1910.07467.md`, `swiglu_2002.05202.md`, `rope.py`, `rmsnorm.py`, `swiglu.py` | `phase1/components/attention_rope_norms.py`, `phase1/components/_shared.py` |
-| `mla_attention.md` | `mla_deepseek_v2_2405.04434.md`, `mla_attention.py` | `phase1/components/mla_attention.py` |
-| `diff_attention.md` | `diff_attn_v1_2410.05258.md`, `diff_attn_v2_2026_01.md`, `mla_deepseek_v2_2405.04434.md`, `mla_attention.py` | `phase1/components/diff_attention.py` |
+   - Any stale line number pointers found: note the correct current location
 
 ---
 
