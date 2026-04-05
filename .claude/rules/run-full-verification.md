@@ -18,7 +18,7 @@ The verification library has three phases:
 | B | `references/components/` | Component specs: authoritative equations, reference code snippets, and documented deviations for our implementation |
 | B' | `references/verification/reports/` | Verification reports: Phase B specs cross-checked against Phase A sources AND our implementation |
 
-**Phase A and B already exist.** Full verification means running Phase B': dispatching agents to validate that every claim in every Phase B component file is traceable to a Phase A source, and that our implementation in `phase1/model.py` / `phase2/model.py` matches the spec (or has a documented, intentional deviation).
+**Phase A and B already exist.** Full verification means running Phase B': dispatching agents to validate that every claim in every Phase B component file is traceable to a Phase A source, and that our implementation in the component files under `phase1/components/` and `phase2/components/` matches the spec (or has a documented, intentional deviation).
 
 ---
 
@@ -28,7 +28,7 @@ For each component spec in `references/components/`, dispatch a subagent that:
 
 1. **Reads** the component spec (`references/components/<component>.md`)
 2. **Reads** every source file cited in the spec's "Sources" table (`references/sources/papers/<paper>.md` and `references/sources/code/<file>.py`)
-3. **Reads** the implementation section of `phase1/model.py` and/or `phase2/model.py` indicated by the spec's "Our implementation" pointers
+3. **Reads** the component implementation file(s) listed in the table below
 4. **Cross-checks**:
    - Every equation in "Authoritative equations" — is it verbatim from the cited paper?
    - Every code snippet in "Reference implementation" — is it verbatim from the cited source file?
@@ -42,23 +42,24 @@ For each component spec in `references/components/`, dispatch a subagent that:
 
 ### Components to verify
 
-| Component spec | Sources | Implementation |
-|---------------|---------|----------------|
-| `causal_recurrence.md` | `griffin_2402.19427.md`, `griffin_rglru.py` | `phase2/model.py` — CausalRecurrenceLayer, _parallel_scan |
-| `zone_ed_pipeline.md` | `hnet_2507.07955.md`, `hnet_boundary.py`, `dlcm.md` | `phase2/model.py` — ZoneE, ZoneD, BoundaryRouter |
-| `boundary_router.md` | `hnet_2507.07955.md`, `hnet_boundary.py`, `dlcm.md` | `phase2/model.py` — BoundaryRouter |
-| `mol_ffn.md` | `deepseek_v3_2412.19437.md`, `deepseek_v3_moe.py` | `phase1/model.py` — MoLFFN; `phase2/model.py` — InnerTransformer |
-| `mhc.md` | `mhc_2512.24880.md`, `mhc_hyper_connections.py` | `phase1/model.py` — mHCLayer |
-| `attention_rope_norms.md` | `rope_2104.09864.md`, `rmsnorm_1910.07467.md`, `swiglu_2002.05202.md`, `rope.py`, `rmsnorm.py`, `swiglu.py` | `phase1/model.py`, `phase2/model.py` — attention blocks |
-| `mla_attention.md` | `mla_deepseek_v2_2405.04434.md`, `mla_attention.py` | `phase1/model.py` — MLACausalAttention (lines 81–148) |
-| `diff_attention.md` | `diff_attn_v1_2410.05258.md`, `diff_attn_v2_2026_01.md`, `mla_deepseek_v2_2405.04434.md`, `mla_attention.py` | `phase1/model.py` — DifferentialCausalAttention (lines 151–225), DiffMLAAttention (lines 228–310) |
+| Component spec | Sources | Implementation files |
+|---------------|---------|---------------------|
+| `causal_recurrence.md` | `griffin_2402.19427.md`, `griffin_rglru.py` | `phase2/components/causal_recurrence.py` |
+| `zone_ed_pipeline.md` | `hnet_2507.07955.md`, `hnet_boundary.py`, `dlcm.md` | `phase2/components/zone_e.py`, `phase2/components/zone_d.py` |
+| `boundary_router.md` | `hnet_2507.07955.md`, `hnet_boundary.py`, `dlcm.md` | `phase2/components/boundary_router.py` |
+| `mol_ffn.md` | `deepseek_v3_2412.19437.md`, `deepseek_v3_moe.py` | `phase1/components/mol_ffn.py`, `phase2/components/zone_e.py` |
+| `mhc.md` | `mhc_2512.24880.md`, `mhc_hyper_connections.py` | `phase1/components/mhc.py` |
+| `attention_rope_norms.md` | `rope_2104.09864.md`, `rmsnorm_1910.07467.md`, `swiglu_2002.05202.md`, `rope.py`, `rmsnorm.py`, `swiglu.py` | `phase1/components/attention_rope_norms.py`, `phase1/components/_shared.py` |
+| `mla_attention.md` | `mla_deepseek_v2_2405.04434.md`, `mla_attention.py` | `phase1/components/mla_attention.py` |
+| `diff_attention.md` | `diff_attn_v1_2410.05258.md`, `diff_attn_v2_2026_01.md`, `mla_deepseek_v2_2405.04434.md`, `mla_attention.py` | `phase1/components/diff_attention.py` |
 
 ---
 
 ## After agents complete
 
 1. Review the reports in `references/verification/reports/`
-2. If all pass (or pass-with-issues where issues are acceptable): `python utils/verify.py update --result pass --report references/verification/reports/`
+2. If all pass (or pass-with-issues where issues are acceptable): `python utils/verify.py update --result pass --report references/verification/reports/ <component> [...]`
+   Use the component names from the table above (e.g., `causal_recurrence`, `mla_attention`, etc.).
 3. If any fail: fix the root cause in the spec or implementation, then re-run
 4. `git commit` including the updated `references/verification/last_verified.json` and reports
 

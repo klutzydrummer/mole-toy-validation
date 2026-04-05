@@ -1,6 +1,7 @@
 {
-  "_note": "Updated by utils/verify.py --full. Do not edit manually.",
-  "files": {
+  "_schema_version": 2,
+  "_note": "Updated by utils/verify.py update. Do not edit manually.",
+  "_v1_files": {
     "phase1/model.py": {
       "git_hash": "5078d459a660c73518a798def80722be1428cfcb",
       "verified_at": "2026-04-03T10:13:07Z",
@@ -18,6 +19,79 @@
       "verified_at": "2026-04-02T02:06:10Z",
       "result": "pass",
       "report": "references/verification/reports/phase_b_prime_mla_attention.md"
+    }
+  },
+  "components": {
+    "attention_rope_norms": {
+      "file_hashes": {
+        "phase1/components/attention_rope_norms.py": "7cbfc1d0252d021e6561a200764276ffd381f1de",
+        "phase1/components/_shared.py": "964d8d393b8b418a3d91c3ed0393661692398e8f"
+      },
+      "verified_at": "2026-04-05T02:40:54Z",
+      "result": "pass",
+      "report": "references/verification/reports/"
+    },
+    "mla_attention": {
+      "file_hashes": {
+        "phase1/components/mla_attention.py": "eb17dd44225ba1ce60b01cacecd4578b2022e0b9",
+        "phase1/components/attention_rope_norms.py": "7cbfc1d0252d021e6561a200764276ffd381f1de",
+        "phase1/components/_shared.py": "964d8d393b8b418a3d91c3ed0393661692398e8f"
+      },
+      "verified_at": "2026-04-05T02:40:54Z",
+      "result": "pass",
+      "report": "references/verification/reports/"
+    },
+    "diff_attention": {
+      "file_hashes": {
+        "phase1/components/diff_attention.py": "b3c9ed126ea3fba5d50941d8f40fe5a179b6e00b",
+        "phase1/components/attention_rope_norms.py": "7cbfc1d0252d021e6561a200764276ffd381f1de",
+        "phase1/components/_shared.py": "964d8d393b8b418a3d91c3ed0393661692398e8f"
+      },
+      "verified_at": "2026-04-05T02:40:54Z",
+      "result": "pass",
+      "report": "references/verification/reports/"
+    },
+    "mhc": {
+      "file_hashes": {
+        "phase1/components/mhc.py": "acb23de7da3a560f59f2d794dfaf9fd2bf24ebff"
+      },
+      "verified_at": "2026-04-05T02:40:54Z",
+      "result": "pass",
+      "report": "references/verification/reports/"
+    },
+    "mol_ffn": {
+      "file_hashes": {
+        "phase1/components/mol_ffn.py": "97b6b4c08eb444e16367243cbf481b6f6033399b",
+        "phase2/components/zone_e.py": "85f4cd24e28003a734de3a0b0fa20c21f23821cd"
+      },
+      "verified_at": "2026-04-05T02:40:54Z",
+      "result": "pass",
+      "report": "references/verification/reports/"
+    },
+    "causal_recurrence": {
+      "file_hashes": {
+        "phase2/components/causal_recurrence.py": "232bdf277dba39e9fc7247eb37e5365a44fa97dc"
+      },
+      "verified_at": "2026-04-05T02:40:54Z",
+      "result": "pass",
+      "report": "references/verification/reports/"
+    },
+    "zone_ed_pipeline": {
+      "file_hashes": {
+        "phase2/components/zone_e.py": "85f4cd24e28003a734de3a0b0fa20c21f23821cd",
+        "phase2/components/zone_d.py": "49a22b771191649f2fb180dee868a25b35773766"
+      },
+      "verified_at": "2026-04-05T02:40:54Z",
+      "result": "pass",
+      "report": "references/verification/reports/"
+    },
+    "boundary_router": {
+      "file_hashes": {
+        "phase2/components/boundary_router.py": "c192bb6e616d5a7e50f6326176d8f1ed92686bf3"
+      },
+      "verified_at": "2026-04-05T02:40:54Z",
+      "result": "pass",
+      "report": "references/verification/reports/"
     }
   }
 }

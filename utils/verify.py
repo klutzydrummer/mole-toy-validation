@@ -2,30 +2,27 @@
 """
 Verification staleness checker for MoLE toy-validation.
 
-This is the lightweight half of the verification pipeline. It tracks whether
-model code has been verified against the reference library in references/components/.
-
-The FULL verification (dispatching agents to cross-check code vs references)
-is done by Claude Code locally on your machine. After agents complete and you
-approve the results, call `update` to record the outcome. The cloud training
-instance only ever calls `check` — no agents, no Claude, just a hash comparison.
+Schema v2: tracks components (named groups of files) instead of individual files.
+Each component corresponds to a spec in references/components/ and maps to one or
+more implementation files that are jointly hashed.
 
 Workflow:
-  1. Change model code locally
-  2. Ask Claude Code: "run full verification"  ← agents do the work here
+  1. Change a component file locally
+  2. Ask Claude Code: "run full verification for <component>"  ← agents do the work
   3. Review the report in references/verification/reports/
-  4. python utils/verify.py update --result pass --report <path> [files...]
+  4. python utils/verify.py update --result pass --report <path> <component> [...]
   5. git commit (including updated last_verified.json)
-  6. Cloud: run_experiments.sh calls `python utils/verify.py check` — passes if hashes match
+  6. Cloud: run_experiments.sh calls `python utils/verify.py check` — passes if all current
 
 Commands:
-  python utils/verify.py check [file ...]   Check staleness (exit 0=current, 1=stale)
-  python utils/verify.py status             Print human-readable verification table
-  python utils/verify.py update [file ...]  Record verification result (after agent run)
+  python utils/verify.py check [component ...]   Check staleness (exit 0=current, 1=stale)
+  python utils/verify.py status                  Print human-readable verification table
+  python utils/verify.py update <component> ...  Record verification result (after agent run)
     --result pass|fail
     --report  path/to/report.md
+  python utils/verify.py migrate                 Migrate v1 schema to v2 (first-time only)
 
-If no files are given to `check` or `update`, all TRACKED_FILES are used.
+If no components are given to `check`, all TRACKED_COMPONENTS are checked.
 """
 
 import argparse
@@ -41,20 +38,50 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 VERIFIED_JSON = REPO_ROOT / "references" / "verification" / "last_verified.json"
 
-# Files whose content must be verified before training.
-# Covers all architectural implementations — the math lives here.
-TRACKED_FILES = [
-    "phase1/model.py",
-    "phase2/model.py",
-]
+# Components: named groups of files tracked together.
+# A component is stale when ANY of its files changes since last verification.
+# Multiple components may share a file (e.g., _shared.py, zone_e.py).
+TRACKED_COMPONENTS: dict[str, list[str]] = {
+    "attention_rope_norms": [
+        "phase1/components/attention_rope_norms.py",
+        "phase1/components/_shared.py",
+    ],
+    "mla_attention": [
+        "phase1/components/mla_attention.py",
+        "phase1/components/attention_rope_norms.py",
+        "phase1/components/_shared.py",
+    ],
+    "diff_attention": [
+        "phase1/components/diff_attention.py",
+        "phase1/components/attention_rope_norms.py",
+        "phase1/components/_shared.py",
+    ],
+    "mhc": [
+        "phase1/components/mhc.py",
+    ],
+    "mol_ffn": [
+        "phase1/components/mol_ffn.py",
+        "phase2/components/zone_e.py",
+    ],
+    "causal_recurrence": [
+        "phase2/components/causal_recurrence.py",
+    ],
+    "zone_ed_pipeline": [
+        "phase2/components/zone_e.py",
+        "phase2/components/zone_d.py",
+    ],
+    "boundary_router": [
+        "phase2/components/boundary_router.py",
+    ],
+}
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def git_blob_hash(rel_path: str) -> str | None:
     """
-    Return the git blob hash for a file — this is the SHA-1 of the file's
-    content, independent of commit history. Changes only when the file changes.
+    Return the git blob hash for a file — the SHA-1 of the file content,
+    independent of commit history. Changes only when the file changes.
     Returns None if git is unavailable or the file is untracked.
     """
     try:
@@ -68,11 +95,20 @@ def git_blob_hash(rel_path: str) -> str | None:
         return None
 
 
+def component_file_hashes(component: str) -> dict[str, str | None]:
+    """Return {file_path: blob_hash} for all files in a component."""
+    return {f: git_blob_hash(f) for f in TRACKED_COMPONENTS[component]}
+
+
 def load_record() -> dict:
     if VERIFIED_JSON.exists():
         with open(VERIFIED_JSON) as f:
             return json.load(f)
-    return {"_note": "Updated by utils/verify.py update. Do not edit manually.", "files": {}}
+    return {
+        "_schema_version": 2,
+        "_note": "Updated by utils/verify.py update. Do not edit manually.",
+        "components": {},
+    }
 
 
 def save_record(data: dict) -> None:
@@ -82,78 +118,112 @@ def save_record(data: dict) -> None:
         f.write("\n")
 
 
+def is_v1(record: dict) -> bool:
+    return "_schema_version" not in record and "files" in record
+
+
+def check_component_staleness(component: str, record: dict) -> list[str] | None:
+    """
+    Return None if component is current, or a list of reason strings if stale.
+    """
+    components = record.get("components", {})
+    entry = components.get(component)
+
+    if not entry:
+        return ["never verified"]
+
+    reasons = []
+    stored_hashes = entry.get("file_hashes", {})
+    for f in TRACKED_COMPONENTS[component]:
+        current = git_blob_hash(f)
+        stored  = stored_hashes.get(f)
+        if current is None:
+            reasons.append(f"{f}: cannot compute hash (untracked?)")
+        elif stored is None:
+            reasons.append(f"{f}: not in stored record")
+        elif current != stored:
+            reasons.append(f"{f}: modified since {entry.get('verified_at', 'unknown')}")
+
+    if not reasons and entry.get("result") != "pass":
+        reasons.append(f"last result was '{entry.get('result')}'")
+
+    return reasons if reasons else None
+
+
 # ── Commands ──────────────────────────────────────────────────────────────────
 
 def cmd_check(args) -> int:
     """
-    Exit 0 if all tracked files are current (hash matches last_verified.json).
+    Exit 0 if all checked components are current.
     Exit 1 if any are stale or have never been verified.
-    Prints a summary either way.
     """
-    files = args.files if args.files else TRACKED_FILES
     record = load_record()
-    verified = record.get("files", {})
+
+    if is_v1(record):
+        print("WARNING: last_verified.json uses old v1 schema (file-level tracking).")
+        print("Run: python utils/verify.py migrate")
+        print("Then re-verify all components.")
+        return 1
+
+    components = args.components if args.components else list(TRACKED_COMPONENTS)
 
     stale = []
-    for f in files:
-        current = git_blob_hash(f)
-        entry   = verified.get(f, {})
-        if current is None:
-            stale.append((f, "cannot compute hash (untracked or git unavailable)"))
-        elif not entry:
-            stale.append((f, "never verified"))
-        elif entry.get("git_hash") != current:
-            stale.append((f, f"modified since {entry.get('verified_at', 'unknown')}"))
-        elif entry.get("result") != "pass":
-            stale.append((f, f"last verification result was '{entry.get('result')}'"))
+    for comp in components:
+        if comp not in TRACKED_COMPONENTS:
+            print(f"ERROR: unknown component '{comp}'. Known: {list(TRACKED_COMPONENTS)}")
+            return 1
+        reasons = check_component_staleness(comp, record)
+        if reasons:
+            stale.append((comp, reasons))
 
     if stale:
         print("=" * 60)
         print("  VERIFICATION STALE — training blocked")
         print("=" * 60)
-        for f, reason in stale:
-            print(f"  ✗  {f}")
-            print(f"       {reason}")
+        for comp, reasons in stale:
+            print(f"  ✗  {comp}")
+            for r in reasons:
+                print(f"       {r}")
         print()
-        print("Run full verification locally in Claude Code:")
-        print("  Tell Claude: 'run full verification'")
-        print("  Then: python utils/verify.py update --result pass --report <path>")
+        print("Run component verification locally in Claude Code:")
+        print("  Tell Claude: 'run full verification for <component>'")
+        print("  Then: python utils/verify.py update --result pass --report <path> <component>")
         print()
         return 1
-    else:
-        print("Verification current — all tracked files match last_verified.json.")
-        return 0
+
+    print("Verification current — all checked components match last_verified.json.")
+    return 0
 
 
 def cmd_status(args) -> int:
-    """Print a human-readable table of verification status for all tracked files."""
-    record   = load_record()
-    verified = record.get("files", {})
+    """Print a human-readable table of verification status for all tracked components."""
+    record = load_record()
 
-    col_f  = 35
-    col_s  = 14
-    col_r  = 8
-    col_t  = 22
+    if is_v1(record):
+        print("WARNING: last_verified.json uses old v1 schema. Run: python utils/verify.py migrate")
+        return 1
 
-    header = f"{'File':<{col_f}} {'Status':<{col_s}} {'Result':<{col_r}} {'Verified at':<{col_t}} Report"
+    components_record = record.get("components", {})
+
+    col_c = 24
+    col_s = 16
+    col_r =  8
+    col_t = 22
+
+    header = f"{'Component':<{col_c}} {'Status':<{col_s}} {'Result':<{col_r}} {'Verified at':<{col_t}} Report"
     print(header)
-    print("-" * (col_f + col_s + col_r + col_t + 30))
+    print("-" * (col_c + col_s + col_r + col_t + 30))
 
-    for f in TRACKED_FILES:
-        current = git_blob_hash(f)
-        entry   = verified.get(f, {})
+    for comp in TRACKED_COMPONENTS:
+        entry   = components_record.get(comp, {})
+        reasons = check_component_staleness(comp, record)
 
         if not entry:
             status = "never verified"
             result = "-"
             when   = "-"
             report = "-"
-        elif current is None:
-            status = "hash unavailable"
-            result = entry.get("result", "-")
-            when   = entry.get("verified_at", "-")
-            report = entry.get("report", "-")
-        elif entry.get("git_hash") != current:
+        elif reasons:
             status = "STALE"
             result = entry.get("result", "-")
             when   = entry.get("verified_at", "-")
@@ -169,7 +239,12 @@ def cmd_status(args) -> int:
             when   = entry.get("verified_at", "-")
             report = entry.get("report", "-")
 
-        print(f"{f:<{col_f}} {status:<{col_s}} {result:<{col_r}} {when:<{col_t}} {report}")
+        print(f"{comp:<{col_c}} {status:<{col_s}} {result:<{col_r}} {when:<{col_t}} {report}")
+
+        # Show which files are stale if relevant
+        if reasons and entry:
+            for r in reasons:
+                print(f"  {'':>{col_c}}  {r}")
 
     return 0
 
@@ -183,60 +258,116 @@ def cmd_update(args) -> int:
         print(f"ERROR: --result must be 'pass' or 'fail', got '{args.result}'")
         return 1
 
-    files = args.files if args.files else TRACKED_FILES
-    now   = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    data  = load_record()
+    if not args.components:
+        print("ERROR: specify at least one component name.")
+        print(f"Known: {list(TRACKED_COMPONENTS)}")
+        return 1
+
+    record = load_record()
+    if is_v1(record):
+        print("ERROR: last_verified.json uses old v1 schema. Run: python utils/verify.py migrate first.")
+        return 1
+
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     updated = []
     skipped = []
-    for f in files:
-        h = git_blob_hash(f)
-        if h is None:
-            print(f"WARNING: cannot compute hash for {f} — skipping")
-            skipped.append(f)
+    for comp in args.components:
+        if comp not in TRACKED_COMPONENTS:
+            print(f"ERROR: unknown component '{comp}'. Known: {list(TRACKED_COMPONENTS)}")
+            skipped.append(comp)
             continue
-        data.setdefault("files", {})[f] = {
-            "git_hash":    h,
-            "verified_at": now,
-            "result":      args.result,
-            "report":      args.report or "",
-        }
-        updated.append(f)
 
-    save_record(data)
+        hashes = component_file_hashes(comp)
+        missing = [f for f, h in hashes.items() if h is None]
+        if missing:
+            print(f"WARNING: cannot hash {missing} for '{comp}' — skipping")
+            skipped.append(comp)
+            continue
+
+        record.setdefault("components", {})[comp] = {
+            "file_hashes":  hashes,
+            "verified_at":  now,
+            "result":       args.result,
+            "report":       args.report or "",
+        }
+        updated.append(comp)
 
     if updated:
+        save_record(record)
         print("Updated last_verified.json:")
-        for f in updated:
-            print(f"  {f}  result={args.result}  verified_at={now}")
+        for comp in updated:
+            files = list(TRACKED_COMPONENTS[comp])
+            print(f"  {comp}  result={args.result}  files={files}  verified_at={now}")
     if skipped:
-        print(f"Skipped (no hash): {', '.join(skipped)}")
+        print(f"Skipped: {', '.join(skipped)}")
 
     return 0 if not skipped else 1
+
+
+def cmd_migrate(args) -> int:
+    """
+    Migrate v1 last_verified.json (file-level) to v2 (component-level).
+    All components are marked never-verified — re-verify each before training.
+    The old file data is preserved under '_v1_files' for reference.
+    """
+    if not VERIFIED_JSON.exists():
+        print("No last_verified.json found — writing fresh v2 skeleton.")
+        save_record({
+            "_schema_version": 2,
+            "_note": "Updated by utils/verify.py update. Do not edit manually.",
+            "components": {},
+        })
+        return 0
+
+    with open(VERIFIED_JSON) as f:
+        old = json.load(f)
+
+    if not is_v1(old):
+        print("last_verified.json is already v2 — nothing to migrate.")
+        return 0
+
+    new = {
+        "_schema_version": 2,
+        "_note": "Updated by utils/verify.py update. Do not edit manually.",
+        "_v1_files": old.get("files", {}),
+        "components": {},
+    }
+    save_record(new)
+    print("Migrated last_verified.json to v2 schema.")
+    print("All components are now 'never verified' — re-verify each before training.")
+    print()
+    print("Components to verify:")
+    for comp, files in TRACKED_COMPONENTS.items():
+        print(f"  {comp}: {files}")
+    return 0
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def main():
     parser = argparse.ArgumentParser(
-        description="MoLE verification staleness checker",
+        description="MoLE verification staleness checker (schema v2: component-level)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
     sub = parser.add_subparsers(dest="command", metavar="command")
 
     # check
-    p_check = sub.add_parser("check", help="Check if tracked files are current (exit 0) or stale (exit 1)")
-    p_check.add_argument("files", nargs="*", help="Files to check (default: all TRACKED_FILES)")
+    p_check = sub.add_parser("check", help="Check components are current (exit 0) or stale (exit 1)")
+    p_check.add_argument("components", nargs="*", help="Components to check (default: all)")
 
     # status
     sub.add_parser("status", help="Print human-readable verification table")
 
     # update
     p_update = sub.add_parser("update", help="Record a verification result after agent run")
-    p_update.add_argument("files", nargs="*", help="Files verified (default: all TRACKED_FILES)")
+    p_update.add_argument("components", nargs="*", help="Component names verified")
     p_update.add_argument("--result",  required=True, choices=["pass", "fail"])
     p_update.add_argument("--report",  default="",    help="Path to the verification report")
+
+    # migrate
+    sub.add_parser("migrate", help="Migrate v1 (file-level) schema to v2 (component-level)")
 
     args = parser.parse_args()
 
@@ -246,6 +377,8 @@ def main():
         sys.exit(cmd_status(args))
     elif args.command == "update":
         sys.exit(cmd_update(args))
+    elif args.command == "migrate":
+        sys.exit(cmd_migrate(args))
     else:
         parser.print_help()
         sys.exit(1)
