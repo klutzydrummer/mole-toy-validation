@@ -120,18 +120,18 @@ class SqrtBoundDerivative(torch.autograd.Function):
 
 ## Our implementation
 
-**Primary class:** `phase2/model.py:83` — `CausalRecurrenceLayer`
+**Primary class:** `phase2/components/causal_recurrence.py:51` — `CausalRecurrenceLayer`
 
-**Parallel scan helper:** `phase2/model.py:44` — `_parallel_scan`
+**Parallel scan helper:** `phase2/components/causal_recurrence.py:16` — `_parallel_scan`
 
-**Usage in Zone E:** `phase2/model.py:281` — `nn.ModuleList([CausalRecurrenceLayer(d_outer) for _ in range(3)])`
+**Usage in Zone E:** `phase2/components/zone_e.py:31` — `nn.ModuleList([CausalRecurrenceLayer(d_inner, log_a_init=3.0) for _ in range(3)])` (CRLEncoder); `phase2/components/zone_e.py:58` (CRLEncoderFull)
 
-**Usage in Zone D:** `phase2/model.py:398` — same pattern, 3 layers at d_outer = d/4
+**Usage in Zone D:** `phase2/components/zone_d.py:12` — imports `_parallel_scan` directly; no `CausalRecurrenceLayer` in Zone D
 
 ### Intentional deviations from reference
 
 1. **Parallel scan instead of sequential loop.** The reference `rnn_scan` uses a Python
-   `for t in range(L)` loop (O(L) kernel launches). Our `_parallel_scan` (`phase2/model.py:44`)
+   `for t in range(L)` loop (O(L) kernel launches). Our `_parallel_scan` (`phase2/components/causal_recurrence.py:16`)
    uses the closed-form log-space prefix scan:
    ```
    log_A_t = cumsum(log(a_t), dim=1)
@@ -139,7 +139,7 @@ class SqrtBoundDerivative(torch.autograd.Function):
    ```
    This is mathematically equivalent for h0=0 and reduces to ~6 tensor ops per instance,
    making it compilable by `torch.compile` into a single fused kernel graph. The derivation
-   is in the docstring at `phase2/model.py:47–67`.
+   is in the docstring at `phase2/components/causal_recurrence.py:19–48`.
 
 2. **log_a parameterization instead of softplus(a_param), with role-specific init.**
    The reference stores `a_param` and computes decay as `exp(-8 * gate_a * softplus(a_param))`,
@@ -153,9 +153,9 @@ class SqrtBoundDerivative(torch.autograd.Function):
    same running-average vector; the inner transformer is blind; the model collapses to
    unigram prediction (~9.7 BPC). This failure burned three 50k-step Phase 2 runs.
 
-   Current init values (phase2/model.py):
-   - Zone E: `log_a_init=3.0` → a_base≈0.953, half-life≈4 steps, gradient≈0.047
-   - Zone D: `log_a_init=0.0` → a_base=0.500, half-life<1 step,  gradient=0.250
+   Current init values:
+   - Zone E: `log_a_init=3.0` → a_base≈0.953, half-life≈4 steps, gradient≈0.047 (`phase2/components/zone_e.py:32`)
+   - Zone D: `log_a_init=0.0` → a_base=0.500, half-life<1 step,  gradient=0.250 (not used via CausalRecurrenceLayer; Zone D uses `_parallel_scan` directly)
 
    The softplus parameterization (gradient = sigmoid(a_param) ≈ 0.5–1.0 regardless of
    the decay value) is strictly better conditioned. This is a known remaining deviation
@@ -163,8 +163,8 @@ class SqrtBoundDerivative(torch.autograd.Function):
 
 3. **float32 promotion for sigmoid(log_a) only.** The reference promotes all accumulation
    to float32 inside `rnn_scan`. We promote only the `sigmoid(log_a)` computation to float32
-   before casting back to working dtype (`phase2/model.py:139`). The parallel scan itself
-   runs fully in float32 inside `_parallel_scan` (`phase2/model.py:69–76`). The net effect
+   before casting back to working dtype (`phase2/components/causal_recurrence.py:111`). The parallel scan itself
+   runs fully in float32 inside `_parallel_scan` (`phase2/components/causal_recurrence.py:41–48`). The net effect
    is the same: no float16 saturation in the decay path.
 
 4. **sqrt clamped to 1e-6 instead of custom autograd function.** The reference uses

@@ -165,11 +165,15 @@ out = torch.gather(
 
 ## Our implementation
 
-**File:** `phase2/model.py`
+**Files:**
+- `phase2/components/zone_e.py` — Zone E encoder classes (`CRLEncoder`, `CRLEncoderFull`, `TransformerEncoder`, `DiffAttnEncoder`, `MLAEncoder`, `IdentityEncoder`)
+- `phase2/components/zone_d.py` — `SimpleDecoder` (Zone D reconstruction)
+- `phase2/components/boundary_router.py` — `BoundaryRouter`
+- `phase2/model.py` — `OuterModel` (wiring only: `__init__`, `forward`, `CONFIGS`)
 
 ### Zone E — pluggable encoders
 
-`phase2/model.py` — `CRLEncoder`, `TransformerEncoder`, `DiffAttnEncoder`, `MLAEncoder`, `IdentityEncoder`
+`phase2/components/zone_e.py` — `CRLEncoder` (lines 20–41), `CRLEncoderFull` (lines 44–67), `TransformerEncoder` (lines 70–88), `DiffAttnEncoder` (lines 91–110), `MLAEncoder` (lines 113–132), `IdentityEncoder` (lines 135–143)
 
 All implement `forward(x: [B, L, d]) -> encoder_out [B, L, d]`. `CRLEncoder` uses down_proj → 3×CRL(d//4, log_a_init=3.0) → up_proj. Transformer variants use 4 TransformerBlock layers with `n_layers_outer=4`.
 
@@ -179,37 +183,37 @@ All implement `forward(x: [B, L, d]) -> encoder_out [B, L, d]`. `CRLEncoder` use
 
 ### BoundaryRouter
 
-`phase2/model.py` — `BoundaryRouter.forward`
+`phase2/components/boundary_router.py` — `BoundaryRouter.forward`
 
 Three routing modes: `cosine_rule`, `learned_e2e`, `fixed_stride`. `cosine_rule` and `learned_e2e` force `p_0 = 1.0` via `F.pad(p, (1, 0), value=1.0)`. Variable M per sequence, padded to M_max with `concept_mask [B, M_max]` tracking valid entries.
 
 **Deviation — threshold selection instead of hard topk:** H-Net uses `b_t = 𝟙{p_t ≥ 0.5}` with variable M. This implementation matches H-Net exactly (no topk).
 
-**Deviation — W_q/W_k no_reinit via re-application:** H-Net sets `_no_reinit = True` on W_q/W_k weights to prevent downstream re-initialization. Our implementation re-applies `nn.init.eye_` after `self.apply(_init_weights)` in `OuterModel.__init__`. Same outcome, different mechanism.
+**Deviation — W_q/W_k no_reinit via re-application:** H-Net sets `_no_reinit = True` on W_q/W_k weights to prevent downstream re-initialization. Our implementation re-applies `nn.init.eye_` after `self.apply(_init_weights)` in `OuterModel.__init__` (`phase2/model.py` lines 156–158). Same outcome, different mechanism.
 
 ### SimpleDecoder
 
-`phase2/model.py` — `SimpleDecoder.forward`
+`phase2/components/zone_d.py` — `SimpleDecoder.forward` (lines 52–116)
 
 Four steps:
 
-1. **EMA smoothing (Eq. 5)** over M_max concept positions using `_parallel_scan`. `p_at_bounds.clamp(min=0.1)` prevents EMA collapse (see below).
+1. **EMA smoothing (Eq. 5)** over M_max concept positions using `_parallel_scan` (lines 70–84). `p_at_bounds.clamp(min=0.1)` at line 73 prevents EMA collapse (see below).
 
-2. **Plug-back (Eq. 8)** via `torch.cumsum(boundary_mask.long(), dim=1) - 1`. Maps each of L positions to the M index of its most recent boundary. Directly matches reference implementation.
+2. **Plug-back (Eq. 8)** via `torch.cumsum(boundary_mask.long(), dim=1) - 1` (lines 91–96). Maps each of L positions to the M index of its most recent boundary. Directly matches reference implementation.
 
-3. **Confidence scoring + STE (Eq. 6–7–9):**
+3. **Confidence scoring + STE (Eq. 6–7–9)** (lines 103–109):
    ```python
-   b_float = (boundary_probs >= 0.5).float()
-   c_t     = b_float * boundary_probs + (1 - b_float) * (1 - boundary_probs)  # Eq. 6
-   ste_c   = c_t + (1.0 - c_t).detach()                                       # Eq. 7
-   upsampled = ste_c.unsqueeze(-1) * plugback                                  # Eq. 9
+   b_float = boundary_mask.float()
+   c_t     = b_float * boundary_probs + (1.0 - b_float) * (1.0 - boundary_probs)  # Eq. 6
+   ste_c   = c_t + (1.0 - c_t).detach()                                            # Eq. 7
+   upsampled = ste_c.unsqueeze(-1) * plugback                                       # Eq. 9
    ```
 
-4. **Residual (Eq. 3):** `out = upsampled + self.residual_proj(encoder_out)` where `residual_proj = nn.Linear(d, d, bias=False)` initialized with `weight=0`.
+4. **Residual (Eq. 3)** (line 114): `out = upsampled + self.residual_proj(encoder_out)` where `residual_proj = nn.Linear(d, d, bias=False)` initialized with `weight=0` in `OuterModel.__init__` (`phase2/model.py` line 161).
 
 ### p_at_bounds.clamp(min=0.1) — EMA collapse prevention
 
-`phase2/model.py` — `SimpleDecoder.forward`
+`phase2/components/zone_d.py` — `SimpleDecoder.forward` line 73
 
 If boundary_probs at selected positions are near zero early in training, the EMA degenerates: every `h_i ≈ h_0`. The `min=0.1` clamp ensures each selected boundary does at least a 10% blend toward its concept token.
 
@@ -223,7 +227,7 @@ Implements H-Net Eq. 10 exactly. α = 0.03 (H-Net default). `outer_crl` and `out
 
 ### Full forward pass (OuterModel)
 
-`phase2/model.py` — `OuterModel.forward`
+`phase2/model.py` — `OuterModel.forward` (lines 174–196)
 
 ```
 embed(x) [B, L, d]

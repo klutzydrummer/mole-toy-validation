@@ -4,8 +4,8 @@
 
 **Name:** Differential Attention V2 (and Diff+MLA composition)
 **Classes:**
-- `DifferentialCausalAttention` in `phase1/model.py` — pure Diff V2
-- `DiffMLAAttention` in `phase1/model.py` — Diff V2 + MLA KV compression (novel composition)
+- `DifferentialCausalAttention` in `phase1/components/diff_attention.py` — pure Diff V2
+- `DiffMLAAttention` in `phase1/components/diff_attention.py` — Diff V2 + MLA KV compression (novel composition)
 
 **Description:** Differential attention cancels noise by subtracting two softmax attention
 outputs scaled by a learned per-token, per-head coefficient λ. V2 (January 2026) doubles the
@@ -130,18 +130,18 @@ K and V repeated via `repeat_interleave(2, dim=1)` to match 2h query heads for S
 
 ## Our implementation
 
-**File:** `phase1/model.py`
+**File:** `phase1/components/diff_attention.py`
 
 | Class | Lines | Role |
 |-------|-------|------|
-| `DifferentialCausalAttention` | 151–225 | Pure Diff V2: doubled Q, standard KV, sigmoid λ |
-| `DifferentialCausalAttention.__init__` | 176–195 | Projections, W_λ, RoPE buffers |
-| `DifferentialCausalAttention.forward` | 197–225 | Forward: project → rope → repeat_kv → SDPA → diff → out |
-| `DiffMLAAttention` | 228–310 | Diff V2 + MLA KV compression (novel composition) |
-| `DiffMLAAttention.__init__` | 249–280 | MLA KV/Q projections, W_λ, RoPE buffers |
-| `DiffMLAAttention.forward` | 282–310 | Forward: MLA compress → rope → repeat_kv → SDPA → diff → out |
+| `DifferentialCausalAttention` | 18–92 | Pure Diff V2: doubled Q, standard KV, sigmoid λ |
+| `DifferentialCausalAttention.__init__` | 43–62 | Projections, W_λ, RoPE buffers |
+| `DifferentialCausalAttention.forward` | 64–92 | Forward: project → rope → repeat_kv → SDPA → diff → out |
+| `DiffMLAAttention` | 95–177 | Diff V2 + MLA KV compression (novel composition) |
+| `DiffMLAAttention.__init__` | 116–147 | MLA KV/Q projections, W_λ, RoPE buffers |
+| `DiffMLAAttention.forward` | 149–177 | Forward: MLA compress → rope → repeat_kv → SDPA → diff → out |
 
-### DifferentialCausalAttention — projections (phase1/model.py:183–191)
+### DifferentialCausalAttention — projections (phase1/components/diff_attention.py:50–58)
 
 ```python
 self.W_Q = nn.Linear(d, 2 * d, bias=False)   # d → 2·n_heads·d_head (doubled Q)
@@ -151,7 +151,7 @@ self.W_lambda = nn.Linear(d, n_heads, bias=True)  # token-specific λ per head
 self.out = nn.Linear(d, d, bias=False)
 ```
 
-### DifferentialCausalAttention — forward (phase1/model.py:202–225)
+### DifferentialCausalAttention — forward (phase1/components/diff_attention.py:64–92)
 
 ```python
 q = self.W_Q(x).reshape(B, L, 2 * nh, dh).transpose(1, 2)  # [B, 2h, L, dh]
@@ -175,7 +175,7 @@ out = (attn1 - lam * attn2).transpose(1, 2).reshape(B, L, D)
 return self.out(out)
 ```
 
-### DiffMLAAttention — novel composition (phase1/model.py:265–310)
+### DiffMLAAttention — novel composition (phase1/components/diff_attention.py:116–147)
 
 KV and Q paths follow MLA (Eq. 9–13 from arXiv:2405.04434), then Diff V2 differential:
 
@@ -193,7 +193,7 @@ self.W_UQ  = nn.Linear(d_c_q, 2 * nh * dh, bias=False)  # 2h heads
 self.W_lambda = nn.Linear(d, nh, bias=True)
 ```
 
-Forward (phase1/model.py:287–310):
+Forward (phase1/components/diff_attention.py:149–177):
 ```python
 c_kv = self.W_DKV(x)
 k = self.W_UK(c_kv).reshape(B, L, nh, dh).transpose(1, 2)

@@ -31,7 +31,7 @@ touching — do NOT rely on memory of prior reads.
 
 ## Critical invariants to check before any edit
 
-- `mhc.md`: H_res/H_pre/H_post init, sinkhorn normalization, softmax (not softplus)
+- `mhc.md`: H_res/H_pre/H_post init, KromHC Kronecker factorization for H_res (not Sinkhorn — replaced by arXiv:2601.21579), softmax (not softplus) for H_pre/H_post
 - `mol_ffn.md`: sigmoid routing scores, unbiased weight normalization, load-balance loss sign
 - `attention_rope_norms.md`: RoPE rotation pairs, RMSNorm formula, SwiGLU gate
 - `mla_attention.md`: shared KV latent (d_c=d//4), separate Q latent (d_c_q=d//2), RoPE on full d_head, no RMSNorm on latents

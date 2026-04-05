@@ -146,17 +146,16 @@ The step mode compares the current token's k-projection against the stored last 
 
 ## Our implementation
 
-**File pointer:** `/home/brandon/Projects/toy-validation/phase2/model.py:156`
-Class `BoundaryRouter` at line 156; `ZoneE` (which owns the router) at line 258.
+**File pointer:** `phase2/components/boundary_router.py:15`
+Class `BoundaryRouter` at line 15. The router is owned by `OuterModel` (not ZoneE) at `phase2/model.py:142`.
 
 **Routing modes:**
 
 | Mode name | Config key(s) | Description |
 |---|---|---|
-| `cosine_rule` | `hdc_rulebased` | No learned params. Raw cosine dissimilarity of encoder outputs. |
-| `learned_e2e` | `hdc_gate`, `hdc_r2`, `hdc_r8`, upcycle variants | W_q/W_k learned; LM gradients flow through boundary_probs into the router. |
-| `fixed_stride` | `hdc_stride` | Selects every R-th token. No signal. Lower-bound baseline. |
-| `learned_isolated` | `hdc_e2e_isolated` (A5 ablation only) | Same as `learned_e2e` but boundary_probs is detached before Zone D. Router only receives gradient from `loss_comp`. |
+| `cosine_rule` | `outer_crl`, `outer_crl_full`, `outer_crl_r2` | No learned params. Raw cosine dissimilarity of encoder outputs. |
+| `learned_e2e` | `outer_crl_learned`, `outer_crl_full_learned`, `outer_transformer`, `outer_diff_attn`, `outer_mla`, `outer_crl_learned_noste` | W_q/W_k learned; LM gradients flow through boundary_probs into the router. |
+| `fixed_stride` | `outer_strided` | Selects evenly spaced positions. No signal. Lower-bound baseline. |
 
 **Intentional deviations from H-Net reference:**
 
@@ -172,7 +171,7 @@ Class `BoundaryRouter` at line 156; `ZoneE` (which owns the router) at line 258.
 
 4. **Cosine rule uses raw encoder outputs without W_q/W_k.** The `cosine_rule` mode (`hnet_boundary.py` equivalent would be W_q = W_k = I at all times, never updated). This is a strict subset of learned routing with frozen identity projections.
 
-6. **`_no_reinit` omitted; replaced with post-init re-application.** The H-Net reference sets `_no_reinit = True` on W_q/W_k to prevent any downstream `_init_weights` sweep from overwriting the identity initialization. Our code instead initializes W_q/W_k to identity directly in `BoundaryRouter.__init__` (`phase2/model.py:201-202`) and then re-applies `nn.init.eye_` in `HDCModel.__init__` after the global `self.apply(_init_weights)` sweep (`phase2/model.py:591-593`). This achieves the same outcome — identity weights survive — via a different mechanism.
+6. **`_no_reinit` omitted; replaced with post-init re-application.** The H-Net reference sets `_no_reinit = True` on W_q/W_k to prevent any downstream `_init_weights` sweep from overwriting the identity initialization. Our code instead initializes W_q/W_k to identity directly in `BoundaryRouter.__init__` (`phase2/components/boundary_router.py:51-52`) and then re-applies `nn.init.eye_` in `OuterModel.__init__` after the global `self.apply(_init_weights)` sweep (`phase2/model.py:156-158`). This achieves the same outcome — identity weights survive — via a different mechanism.
 
 5. **`learned_isolated` gradient isolation (our addition).** Neither H-Net nor DLCM propose stop-gradient through the boundary probability. This mode is an original ablation (A5) to test whether end-to-end LM gradients are necessary for learning useful boundaries, or whether the compression loss alone is sufficient. Expected result: near-random boundaries, confirming that LM signal is required.
 
@@ -191,15 +190,15 @@ This is the mean binary cross-entropy of the boundary probability distribution, 
 
 ## Verification checklist
 
-1. **Identity init preserved.** Confirm `BoundaryRouter.W_q.weight` and `W_k.weight` are `torch.eye(d)` immediately after construction for `learned_e2e` and `learned_isolated` modes. Init at `phase2/model.py:201-202`; re-applied after `self.apply(_init_weights)` at `phase2/model.py:591-593`.
+1. **Identity init preserved.** Confirm `BoundaryRouter.W_q.weight` and `W_k.weight` are `torch.eye(d)` immediately after construction for `learned_e2e` mode. Init at `phase2/components/boundary_router.py:51-52`; re-applied after `self.apply(_init_weights)` at `phase2/model.py:156-158`.
 
-2. **p₁ = 1.0 always set.** In all three non-stride modes, position 0 is padded with `value=1.0`. Confirm `boundary_probs[:, 0].all() == 1.0` for a freshly constructed model's first forward pass. (`phase2/model.py:236, 244`)
+2. **p₀ = 1.0 always set.** In cosine_rule and learned_e2e modes, position 0 is padded with `value=1.0`. Confirm `boundary_probs[:, 0].all() == 1.0` for a freshly constructed model's first forward pass. (`phase2/components/boundary_router.py:89, 97`)
 
-3. **Top-M selects exactly M tokens.** Check `boundary_idx.shape[1] == seq_len // R` for all routing modes. Confirm position 0 is always in `boundary_idx` (since `boundary_probs[:, 0] = 1.0` always wins topk). (`phase2/model.py:248-249`)
+3. **Threshold selection (p > 0.5), variable M per sequence.** ⚠️ *Needs re-verification* — implementation changed from topk(M) to threshold (p > 0.5). `boundary_idx.shape[1]` is now `M_max` (max boundaries in batch), not a fixed `seq_len // R`. Position 0 is always selected since `boundary_probs[:, 0] = 1.0 > 0.5`. (`phase2/components/boundary_router.py:102–133`)
 
-4. **`fixed_stride` has no parameters.** Confirm `len(list(model.zone_e.router.parameters())) == 0` when `routing="fixed_stride"`. (`phase2/model.py:211-217`)
+4. **`fixed_stride` has no parameters.** Confirm `len(list(model.router.parameters())) == 0` when `routing="fixed_stride"`. ⚠️ *Router is now at `model.router`, not `model.zone_e.router`.* (`phase2/model.py:142`)
 
-5. **`learned_isolated` detaches before Zone D.** Confirm that `boundary_probs_for_zd.requires_grad == False` when routing is `learned_isolated`, while `boundary_probs.requires_grad == True` (pre-detach). (`phase2/model.py:253`)
+5. **`learned_isolated` mode removed.** ⚠️ *Needs re-verification* — `learned_isolated` mode no longer exists in the current `BoundaryRouter`. Only `cosine_rule`, `learned_e2e`, and `fixed_stride` are supported. (`phase2/components/boundary_router.py:41–53`)
 
 6. **`cosine_rule` and `learned_e2e` produce identical output at init.** Immediately after construction (before any gradient steps), both modes should produce the same `boundary_probs` for the same input, since `learned_e2e` starts with identity projections. Verify numerically.
 
@@ -207,6 +206,6 @@ This is the mean binary cross-entropy of the boundary probability distribution, 
 
 8. **`boundary_entropy` NaN guard.** Verify no NaN in `boundary_entropy()` when `boundary_probs` contains values exactly 0.0 or 1.0 (as produced by `fixed_stride`). The clamp at `1e-6` should handle this. (`phase2/train.py:95`)
 
-9. **Gradient flow in `learned_e2e`.** Confirm that `W_q.weight.grad` and `W_k.weight.grad` are non-None after a backward pass with `routing="learned_e2e"`. Confirm they are None with `routing="learned_isolated"` (only `loss_comp` contributes, but `loss_comp` uses `boundary_probs` pre-detach — verify `loss_comp` does use the pre-detach `boundary_probs`, not `boundary_probs_for_zd`). (`phase2/model.py:591-593`)
+9. **Gradient flow in `learned_e2e`.** Confirm that `W_q.weight.grad` and `W_k.weight.grad` are non-None after a backward pass with `routing="learned_e2e"`. (`phase2/components/boundary_router.py:91–97`)
 
 10. **Ratio loss not used.** Confirm the training loop does not use H-Net Eq. 10 or DLCM Eq. 10. Only `loss_comp = (bp.mean() - 1/R)**2` is added to `loss_ntp`. This is an intentional deviation from both reference papers. (`phase2/train.py:337-338`)

@@ -3,7 +3,7 @@
 ## Component
 
 **Name:** MLA — Multi-Head Latent Attention
-**Class:** `MLACausalAttention` in `phase1/model.py`
+**Class:** `MLACausalAttention` in `phase1/components/mla_attention.py`
 
 **Description:** Causal self-attention with low-rank KV compression. Instead of projecting
 queries, keys, and values independently at full dimension, both K and V are computed from a
@@ -99,15 +99,15 @@ bottleneck. Field names in the source: `wkv_a` = W^{DKV}, `wkv_b` = joint W^{UK}
 
 ## Our implementation
 
-**File:** `phase1/model.py`
+**File:** `phase1/components/mla_attention.py`
 
 | Class | Lines | Role |
 |-------|-------|------|
-| `MLACausalAttention` | 81–148 | Full MLA layer: KV/Q compression, RoPE, SDPA, output projection |
-| `MLACausalAttention.__init__` | 102–128 | Projection layers and RoPE buffers |
-| `MLACausalAttention.forward` | 130–148 | Forward: compress → rope → SDPA → project |
+| `MLACausalAttention` | 15–82 | Full MLA layer: KV/Q compression, RoPE, SDPA, output projection |
+| `MLACausalAttention.__init__` | 36–62 | Projection layers and RoPE buffers |
+| `MLACausalAttention.forward` | 64–82 | Forward: compress → rope → SDPA → project |
 
-### KV compression path (phase1/model.py:134–137)
+### KV compression path (phase1/components/mla_attention.py:69–71)
 
 ```python
 c_kv = self.W_DKV(x)                                    # Eq. 9: [B, L, d_c]
@@ -115,14 +115,14 @@ k = self.W_UK(c_kv).reshape(B, L, nh, dh).transpose(1, 2)  # Eq. 10: [B, nh, L, 
 v = self.W_UV(c_kv).reshape(B, L, nh, dh).transpose(1, 2)  # Eq. 11: [B, nh, L, dh]
 ```
 
-### Q compression path (phase1/model.py:139–141)
+### Q compression path (phase1/components/mla_attention.py:74–75)
 
 ```python
 c_q = self.W_DQ(x)                                      # Eq. 12: [B, L, d_c_q]
 q = self.W_UQ(c_q).reshape(B, L, nh, dh).transpose(1, 2)   # Eq. 13: [B, nh, L, dh]
 ```
 
-### RoPE and SDPA (phase1/model.py:143–148)
+### RoPE and SDPA (phase1/components/mla_attention.py:77–82)
 
 ```python
 q = apply_rope(q, self.rope_cos, self.rope_sin)
@@ -147,24 +147,24 @@ return self.out(out)
 
 ## Verification checklist
 
-1. **KV shared latent**: Confirm `self.W_DKV` is a single linear `d → d_c` at line 116, and that
-   both `self.W_UK` (`d_c → n_heads*d_head`) at line 117 and `self.W_UV` at line 118 read from
-   the same `c_kv = self.W_DKV(x)` output at line 135. K and V do not have independent inputs.
+1. **KV shared latent**: Confirm `self.W_DKV` is a single linear `d → d_c` at line 50, and that
+   both `self.W_UK` (`d_c → n_heads*d_head`) at line 51 and `self.W_UV` at line 52 read from
+   the same `c_kv = self.W_DKV(x)` output at line 69. K and V do not have independent inputs.
 
 2. **Q separate latent**: Confirm `self.W_DQ` is independent of `W_DKV` — a separate linear at
-   line 121. Q and KV latents are computed from the same input `x` but via different projections.
+   line 55. Q and KV latents are computed from the same input `x` but via different projections.
 
-3. **d_c defaults**: Confirm `d_c = d // 4` at line 110 (= 128 at d=512) and `d_c_q = d // 2`
-   at line 112 (= 256 at d=512).
+3. **d_c defaults**: Confirm `d_c = d // 4` at line 44 (= 128 at d=512) and `d_c_q = d // 2`
+   at line 46 (= 256 at d=512).
 
 4. **No shared parameters between K and V paths**: Confirm `W_UK` and `W_UV` are independent
-   `nn.Linear` instances at lines 117–118. They read from the same `c_kv` but apply different
+   `nn.Linear` instances at lines 51–52. They read from the same `c_kv` but apply different
    weight matrices. K and V must not share weights.
 
-5. **RoPE on both Q and K**: Confirm `apply_rope` is called on both `q` and `k` at lines 143–144.
+5. **RoPE on both Q and K**: Confirm `apply_rope` is called on both `q` and `k` at lines 77–78.
    V is not rotated (standard attention convention).
 
-6. **Output shape contract**: Confirm `out.transpose(1, 2).reshape(B, L, D)` at line 147 produces
+6. **Output shape contract**: Confirm `out.transpose(1, 2).reshape(B, L, D)` at line 81 produces
    shape `[B, L, D]` before the final linear. With `D = d = n_heads * d_head`, this is correct.
 
 7. **No RMSNorm on latents**: Confirm there is no LayerNorm or RMSNorm applied to `c_kv` or

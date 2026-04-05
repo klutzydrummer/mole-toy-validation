@@ -324,7 +324,7 @@ Key excerpt (absorption-mode forward, from the verbatim block at lines 251–266
 
 ### RMSNorm
 
-`phase1/model.py:30–38`
+`phase1/components/_shared.py:15–23`
 
 ```python
 class RMSNorm(nn.Module):
@@ -340,11 +340,11 @@ class RMSNorm(nn.Module):
 
 Matches the LLaMA rsqrt form exactly. No deviations: float32 upcast, epsilon inside the sqrt
 (via `add(eps).rsqrt()`), no mean subtraction, no bias. `phase2/model.py` imports this class
-directly from phase1 (`from phase1.model import RMSNorm`); no separate implementation exists.
+via `phase1.model` which re-exports it from `phase1.components._shared`; no separate implementation exists.
 
 ### RoPE
 
-`phase1/model.py:41–54` — precomputation and application functions:
+`phase1/components/_shared.py:26–39` — precomputation and application functions:
 
 ```python
 def precompute_rope(d_head, max_len=4096, theta=10000.0):
@@ -378,12 +378,12 @@ x * cos + rotate_half(x) * sin
 `torch.cat([freqs, freqs], dim=-1)`. Our code stores a `(max_len, d_head/2)` table (half-width)
 and slices `cos[:, :d_half]` at apply time. The values accessed are identical.
 
-No other deviations. `CausalSelfAttention` at `phase1/model.py:57–78` applies RoPE to both q
+No other deviations. `CausalSelfAttention` at `phase1/components/attention_rope_norms.py:16–37` applies RoPE to both q
 and k before calling `F.scaled_dot_product_attention`.
 
 ### SwiGLU
 
-`phase1/model.py:313–325`
+`phase1/components/_shared.py:42–54`
 
 ```python
 class SwiGLU(nn.Module):
@@ -407,7 +407,7 @@ correctness or the 8/3 parameter ratio.
 
 ### MLA
 
-A simplified `MLACausalAttention` class exists at `phase1/model.py:81–148` — it implements the
+A simplified `MLACausalAttention` class exists at `phase1/components/mla_attention.py:15–82` — it implements the
 low-rank KV/Q compression (DeepSeek-V2 Eq. 9–13) but intentionally omits decoupled RoPE (Eq. 14–19)
 and the KV-cache absorption trick (inference optimization). Standard RoPE is applied to full K and Q
 heads. See `references/components/mla_attention.md` for the full spec and intentional deviations.
@@ -431,7 +431,7 @@ equations are retained for reference only.
    `[x1*cos - x2*sin | x2*cos + x1*sin]` — equivalent to the rotate_half form.
 
 4. **Applied to both q and k:** Inspect `CausalSelfAttention.forward` — both `q` and `k` pass
-   through `apply_rope` before attention (`phase1/model.py:74–75`).
+   through `apply_rope` before attention (`phase1/components/attention_rope_norms.py:33–34`).
 
 5. **Relative position property:** `dot(rotate(q, m), rotate(k, n))` must equal
    `dot(rotate(q, 0), rotate(k, n-m))`. Use `verify_relative_position_property()` in

@@ -22,6 +22,19 @@ The verification library has three phases:
 
 ---
 
+## ⚠️ Important: spec line number updates belong HERE, not as standalone operations
+
+When a component's implementation files move or change, spec line number pointers become stale.
+**Do NOT fix stale line numbers as a separate mass-update pass.** The correct place to fix them
+is step 3 of the Phase B' procedure below: the verification agent reads the current implementation,
+finds the code, and updates any stale pointers in the spec as part of writing its report.
+
+Rationale: a line number update done in isolation is unverified — it asserts a pointer without
+confirming the code at that location still matches the spec's mathematical claims. Only inside a
+full verification run is the pointer update coupled with an actual correctness check.
+
+---
+
 ## Phase B' procedure — run for each component
 
 For each component spec in `references/components/`, dispatch a subagent that:

@@ -61,7 +61,7 @@ python phase2/train.py --config outer_crl --resume    # manual resume (Phase 2)
 python utils/smoke_test.py                            # Phase 2 pre-flight health check
 python utils/smoke_test.py --check-only               # check stored smoke test result
 python utils/verify.py status                         # show verification status
-python utils/verify.py update --result pass --report <path>  # record verification
+python utils/verify.py update --result pass --report <path> <component>  # record verification
 python utils/reporter.py                              # regenerate checkpoints/report.md
 ```
 
@@ -73,15 +73,15 @@ python utils/reporter.py                              # regenerate checkpoints/r
 
 `run_experiments.sh` enforces two gates before any Phase 2 training:
 
-1. **Smoke test** (`utils/smoke_test.py`): 1000-step outer_crl health check. Catches pipeline failures before wasting hours. Result stored in `checkpoints/smoke_test_result.json` and tied to `phase2/model.py` hash — re-runs automatically if model changes. **Hard exit on failure.**
+1. **Smoke test** (`utils/smoke_test.py`): 1000-step outer_crl health check. Catches pipeline failures before wasting hours. Result stored in `checkpoints/smoke_test_result.json` and tied to a hash of the Phase 2 component files — re-runs automatically if model changes. **Hard exit on failure.**
 
-2. **Staleness check** (`utils/verify.py check`): blocks training if `phase1/model.py` or `phase2/model.py` have changed since the last recorded verification.
+2. **Staleness check** (`utils/verify.py check`): blocks training if any component file has changed since its last recorded verification. Tracks 8 named components (see `TRACKED_COMPONENTS` in `utils/verify.py`), not the facade model files.
 
 Workflow when you change model code:
 1. Change model code locally
 2. Ask Claude Code: **"run full verification"** — triggers the Phase B' agent pipeline (`.claude/rules/run-full-verification.md`): agents cross-check every equation and code snippet in `references/components/` against the primary sources in `references/sources/`, and verify the implementation at cited line numbers. Reports written to `references/verification/reports/`.
 3. Review reports — any FAIL verdict must be fixed before proceeding
-4. `python utils/verify.py update --result pass --report <path>`
+4. `python utils/verify.py update --result pass --report <path> <component>` (component names: `attention_rope_norms`, `mla_attention`, `diff_attention`, `mhc`, `mol_ffn`, `causal_recurrence`, `zone_ed_pipeline`, `boundary_router`)
 5. `git commit` (including updated `references/verification/last_verified.json` and reports)
 6. Cloud: `run_experiments.sh` enforces both gates — smoke test + hash check
 
@@ -99,7 +99,7 @@ Authoritative correctness criteria live in `references/components/`. Before touc
 
 | Component | Spec | What to verify |
 |-----------|------|----------------|
-| mHC hyper-connections | `references/components/mhc.md` | H_res/H_pre/H_post init, sinkhorn, softmax not softplus |
+| mHC hyper-connections | `references/components/mhc.md` | H_res/H_pre/H_post init, KromHC (not Sinkhorn), softmax not softplus |
 | MoL routing | `references/components/mol_ffn.md` | sigmoid scores, unbiased weights, load-balance sign |
 | CausalRecurrenceLayer | `references/components/causal_recurrence.md` | sqrt(1-a²) term, float32 sigmoid, parallel scan |
 | BoundaryRouter | `references/components/boundary_router.md` | adjacent key k_{t-1}, p_0=1.0, top-M selection |
@@ -112,14 +112,17 @@ Authoritative correctness criteria live in `references/components/`. Before touc
 ## Architecture
 
 ```
-phase1/model.py     ToyTransformer: baseline / baseline_wide / mhc / mol / mol_single / compose / mla / diff_attn / diff_mla
+phase1/components/  Component implementations: _shared, attention_rope_norms, mla_attention,
+                    diff_attention, mhc, mol_ffn, transformer_block
+phase1/model.py     Facade: re-exports components + ToyTransformer (CONFIGS, forward wiring)
 phase1/train.py     Training loop: AMP, torch.compile, resume, eval
-phase2/model.py     OuterModel: pluggable ZoneE + BoundaryRouter + SimpleDecoder (10 configs)
+phase2/components/  Component implementations: causal_recurrence, zone_e, zone_d, boundary_router
+phase2/model.py     Facade: re-exports components + OuterModel (CONFIGS, forward wiring, 10 configs)
 phase2/train.py     H-Net ratio loss (Eq. 10), alpha warmup, boundary/chunk metrics
 utils/data.py       Data loader: TokenDataset, get_dataloader (WikiText-103 default)
 utils/metrics.py    TrainLogger (JSONL), ParamCounter, ce_to_bpc
 utils/smoke_test.py Phase 2 pre-flight: 1000-step health check (encoder diversity, loss reduction)
-utils/verify.py     Verification staleness checker (hash-based, runs on cloud)
+utils/verify.py     Component-level staleness checker (schema v2: 8 named components)
 utils/reporter.py   Auto-generates checkpoints/report.md every 30s during training
 run_experiments.sh  Run all configs; enforces smoke test + verify before Phase 2
 references/components/  Authoritative specs for each component with verification checklists

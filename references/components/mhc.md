@@ -150,16 +150,18 @@ residuals = self.depth_residual_fn(output, residuals)
 
 ## Our implementation
 
-**File:** `/home/brandon/Projects/toy-validation/phase1/model.py`
+**File:** `phase1/components/mhc.py` (KromHCResidual, HyperConnection);
+`phase1/components/transformer_block.py` (TransformerBlock._forward_mhc);
+`phase1/model.py` (ToyTransformer stream expand/collapse)
 
 | Symbol | Location |
 |--------|----------|
-| `KromHCResidual` | replaces `sinkhorn_log` |
-| `HyperConnection.__init__` | uses `KromHCResidual` for H_res |
-| `HyperConnection.forward` | unchanged structure |
-| `TransformerBlock._forward_mhc` | unchanged |
-| Stream expansion (embed → [B,L,n,d]) | unchanged |
-| Stream collapse (learned weighted sum) | unchanged |
+| `KromHCResidual` | `phase1/components/mhc.py:31` |
+| `HyperConnection.__init__` | `phase1/components/mhc.py:89` |
+| `HyperConnection.forward` | `phase1/components/mhc.py:110` |
+| `TransformerBlock._forward_mhc` | `phase1/components/transformer_block.py:68` |
+| Stream expansion (embed → [B,L,n,d]) | `phase1/model.py:124` |
+| Stream collapse (learned weighted sum) | `phase1/model.py:130` |
 
 **Note:** Line numbers shift when the model is edited. Use `grep -n "class KromHCResidual"` etc. to locate current positions.
 

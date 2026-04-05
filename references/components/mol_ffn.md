@@ -179,21 +179,21 @@ difference described in the next section.
 
 ## Our implementation
 
-**File:** `phase1/model.py`
+**File:** `phase1/components/mol_ffn.py`
 
 | Class | Lines | Role |
 |---|---|---|
-| `LoRAAdapter` | 214–224 | Single rank-r LoRA: `output = (x @ A @ B) * scale` |
-| `MoLFFN` | 227–332 | Full MoL FFN layer |
-| `MoLFFN.forward` | 274–318 | Routing + composition + load balance update |
+| `LoRAAdapter` | 18–28 | Single rank-r LoRA: `output = (x @ A @ B) * scale` |
+| `MoLFFN` | 66–184 | Full MoL FFN layer |
+| `MoLFFN.forward` | 113–168 | Routing + composition + load balance update |
 
-### LoRAAdapter (phase1/model.py:214–224)
+### LoRAAdapter (phase1/components/mol_ffn.py:18–28)
 
 B matrix initialized to zeros (`torch.zeros(rank, d_out)`) so the adapter is a no-op at
 initialization. A matrix initialized with normal distribution scaled by `1/sqrt(d_in)`.
 Scale factor is `1/rank`.
 
-### MoLFFN routing (phase1/model.py:274–287)
+### MoLFFN routing (phase1/components/mol_ffn.py:117–122)
 
 Follows the DeepSeek-V3 Gate pattern exactly:
 
@@ -206,13 +206,13 @@ topk_scores = scores.gather(2, topk_idx)            # gather UNBIASED scores (Eq
 topk_weights = topk_scores / (topk_scores.sum(dim=-1, keepdim=True) + 1e-8)  # normalize (Eq. 13)
 ```
 
-One-hot construction for differentiable gradient flow (phase1/model.py:285–287):
+One-hot construction for differentiable gradient flow (phase1/components/mol_ffn.py:125–126):
 ```python
 one_hot = F.one_hot(topk_idx, self.n_experts).to(x.dtype)  # [B, L, k, n_experts]
 expert_weights = (one_hot * topk_weights.unsqueeze(-1)).sum(dim=2)  # [B, L, n_experts]
 ```
 
-### MoLFFN composition (phase1/model.py:289–306)
+### MoLFFN composition (phase1/components/mol_ffn.py:144–155)
 
 Weight-space composition over all three SwiGLU projections:
 
@@ -220,23 +220,18 @@ Weight-space composition over all three SwiGLU projections:
 W_eff · x = W_base · x + ΔW_shared · x + Σ_k w_k · (ΔW_k · x)
 ```
 
-Applied before the nonlinearity for gate and up, and after for down:
+Applied before the nonlinearity for gate and up, and after for down. The production
+implementation uses batched einsum over all experts simultaneously rather than a
+per-expert loop:
 
 ```python
-gate = self.base_gate(x) + self.shared_gate(x)
-up   = self.base_up(x)   + self.shared_up(x)
-for e in range(self.n_experts):
-    w_e = expert_weights[:, :, e].unsqueeze(-1)
-    gate = gate + w_e * self.expert_gate[e](x)
-    up   = up   + w_e * self.expert_up[e](x)
+gate = self.base_gate(x) + self.shared_gate(x) + (xAB_gate * w).sum(dim=2)
+up   = self.base_up(x)   + self.shared_up(x)   + (xAB_up   * w).sum(dim=2)
 hidden = F.silu(gate) * up                         # nonlinearity ONCE on combined projections
-output = self.base_down(hidden) + self.shared_down(hidden)
-for e in range(self.n_experts):
-    w_e = expert_weights[:, :, e].unsqueeze(-1)
-    output = output + w_e * self.expert_down[e](hidden)
+output = self.base_down(hidden) + self.shared_down(hidden) + (xAB_down * w).sum(dim=2)
 ```
 
-### Load balance update (phase1/model.py:308–317)
+### Load balance update (phase1/components/mol_ffn.py:158–165)
 
 ```python
 if self.training:
@@ -250,7 +245,7 @@ if self.training:
 ```
 
 This is the DeepSeek-V3 sign rule applied per-batch. `bias_step = 0.01` (γ); DeepSeek-V3
-used 0.001 — scaled up for toy experiments (noted in source comment at line 272).
+used 0.001 — scaled up for toy experiments (noted in source comment at line 111).
 
 ### Intentional deviations from DeepSeek-V3
 
