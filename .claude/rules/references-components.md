@@ -3,17 +3,29 @@ paths:
   - "references/components/**"
 ---
 
-When editing any file in references/components/, cross-check the corresponding implementation before finalizing the change:
+When editing any file in `references/components/`, cross-check the corresponding
+implementation before finalizing the change. Any factual claim (equations, init
+values, expected ranges) must be verified against BOTH the implementation AND the
+primary source paper cited in that spec. If spec and implementation disagree,
+document the deviation explicitly in the spec's "Intentional deviations" section.
 
-| Spec file | Implementation |
-|-----------|---------------|
-| causal_recurrence.md | phase2/model.py — CausalRecurrenceLayer, _parallel_scan |
-| zone_ed_pipeline.md | phase2/model.py — ZoneE, ZoneD, BoundaryRouter |
-| boundary_router.md | phase2/model.py — BoundaryRouter |
-| mol_ffn.md | phase1/model.py — MoLFFN; phase2/model.py — InnerTransformer |
-| mhc.md | phase1/model.py — mHCLayer |
-| attention_rope_norms.md | phase1/model.py and phase2/model.py — attention blocks |
-| mla_attention.md | phase1/model.py — MLACausalAttention |
-| diff_attention.md | phase1/model.py — DifferentialCausalAttention, DiffMLAAttention |
+## Spec → implementation mapping
 
-Any factual claim in a spec file (equations, init values, expected ranges) must be verified against the implementation AND the primary source paper cited in that spec file. If the spec and implementation disagree, document the deviation explicitly in the spec's "Intentional deviations" section.
+| Spec file | Implementation file(s) |
+|-----------|------------------------|
+| `attention_rope_norms.md` | `phase1/components/attention_rope_norms.py`, `phase1/components/_shared.py` |
+| `mla_attention.md` | `phase1/components/mla_attention.py` |
+| `diff_attention.md` | `phase1/components/diff_attention.py` |
+| `mhc.md` | `phase1/components/mhc.py` |
+| `mol_ffn.md` | `phase1/components/mol_ffn.py`, `phase2/components/zone_e.py` |
+| `causal_recurrence.md` | `phase2/components/causal_recurrence.py` |
+| `zone_ed_pipeline.md` | `phase2/components/zone_e.py`, `phase2/components/zone_d.py` |
+| `boundary_router.md` | `phase2/components/boundary_router.py` |
+
+## After editing a spec
+
+If the edit changes a claim about the implementation (equation, init value, behavior):
+1. Verify the implementation file still matches the updated spec.
+2. If it does not, fix the implementation too — specs and code must agree.
+3. The component's verification hash will be stale after any implementation change.
+   Run: `python utils/verify.py check` to see which components need re-verification.

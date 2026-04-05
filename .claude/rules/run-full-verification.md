@@ -69,6 +69,13 @@ For each component spec in `references/components/`, dispatch a subagent that:
 
 ## Scope
 
-"Full verification" covers all 8 component files and both model files.
+"Full verification" covers all 8 components (see table above). The facade model files
+(`phase1/model.py`, `phase2/model.py`) contain no math and are not separately verified —
+verification targets the component files they import from.
 
-If the user says "verify causal_recurrence" or names a specific component, run Phase B' for that component only, but still follow all 5 steps above for that component.
+If the user says "verify causal_recurrence" or names a specific component, run Phase B'
+for that component only, but still follow all 5 steps above for that component.
+
+Component names accepted by `verify.py update`:
+`attention_rope_norms`, `mla_attention`, `diff_attention`, `mhc`, `mol_ffn`,
+`causal_recurrence`, `zone_ed_pipeline`, `boundary_router`
