@@ -246,12 +246,11 @@ run_smoke_test() {
 }
 
 # ── Phase 2 runner ─────────────────────────────────────────────────────────────
-# args: <config> [total_steps] [mol_ckpt]
+# args: <config> [total_steps] [seed]
 run_phase2() {
     local cfg="$1"
     local steps="${2:-50000}"
-    local mol_ckpt="${3:-}"
-    local seed="${4:-42}"
+    local seed="${3:-42}"
     echo ""
     echo "========================================"
     echo "  Phase 2: $cfg (seed=$seed)"
@@ -274,28 +273,16 @@ run_phase2() {
         RESUME_FLAG="--resume"
     fi
 
-    MOL_FLAG=""
-    if [ -n "$mol_ckpt" ]; then
-        if [ ! -f "$mol_ckpt" ]; then
-            echo "ERROR: mol_ckpt not found: $mol_ckpt"
-            echo "       Run phase1 mol first: bash run_experiments.sh mol"
-            exit 1
-        fi
-        MOL_FLAG="--mol_ckpt $mol_ckpt"
-    fi
-
     python phase2/train.py \
         --config    "$cfg" \
         --d            512 \
         --n_heads      8 \
-        --mol_rank     8 \
         --total_steps  "${steps}" \
         --batch_size   32 \
         --seq_len      256 \
         --eval_interval 2500 \
         --log_interval  100 \
         --seed         "$seed" \
-        $MOL_FLAG \
         $RESUME_FLAG
 }
 
