@@ -38,6 +38,24 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 VERIFIED_JSON = REPO_ROOT / "references" / "verification" / "last_verified.json"
 
+# Directories that contain verifiable component files.
+COMPONENT_DIRS = [
+    "phase1/components",
+    "phase2/components",
+]
+
+# Files in COMPONENT_DIRS that are intentionally NOT tracked by any component.
+# Every file added here must have a documented reason.
+UNTRACKED_EXEMPT = {
+    # __init__.py files: empty namespace packages, no implementation.
+    "phase1/components/__init__.py",
+    "phase2/components/__init__.py",
+    # transformer_block.py: wiring only — combines components but contains no
+    # mathematical implementation. No spec in references/components/. See
+    # phase1/components/CLAUDE.md: "wiring only — no component spec".
+    "phase1/components/transformer_block.py",
+}
+
 # Components: named groups of files tracked together.
 # A component is stale when ANY of its files changes since last verification.
 # Multiple components may share a file (e.g., _shared.py, zone_e.py).
@@ -122,6 +140,29 @@ def is_v1(record: dict) -> bool:
     return "_schema_version" not in record and "files" in record
 
 
+def find_unaccounted_files() -> list[str]:
+    """
+    Return all .py files under COMPONENT_DIRS that are neither in
+    TRACKED_COMPONENTS (any component's file list) nor in UNTRACKED_EXEMPT.
+
+    A non-empty return value means a new component file was added without
+    updating TRACKED_COMPONENTS — training should be blocked until fixed.
+    """
+    tracked_files: set[str] = {
+        f for files in TRACKED_COMPONENTS.values() for f in files
+    }
+    unaccounted = []
+    for dir_rel in COMPONENT_DIRS:
+        dir_abs = REPO_ROOT / dir_rel
+        if not dir_abs.exists():
+            continue
+        for path in sorted(dir_abs.glob("*.py")):
+            rel = str(path.relative_to(REPO_ROOT))
+            if rel not in tracked_files and rel not in UNTRACKED_EXEMPT:
+                unaccounted.append(rel)
+    return unaccounted
+
+
 def check_component_staleness(component: str, record: dict) -> list[str] | None:
     """
     Return None if component is current, or a list of reason strings if stale.
@@ -157,6 +198,22 @@ def cmd_check(args) -> int:
     Exit 0 if all checked components are current.
     Exit 1 if any are stale or have never been verified.
     """
+    # Block immediately if any component files are unaccounted for.
+    unaccounted = find_unaccounted_files()
+    if unaccounted:
+        print("=" * 60)
+        print("  UNTRACKED COMPONENT FILES — training blocked")
+        print("=" * 60)
+        for f in unaccounted:
+            print(f"  ✗  {f}")
+        print()
+        print("Each file in phase*/components/ must appear in either:")
+        print("  TRACKED_COMPONENTS  (has a spec, will be verified)")
+        print("  UNTRACKED_EXEMPT    (intentionally exempt — document the reason)")
+        print("Edit utils/verify.py to add the file to one of these lists.")
+        print()
+        return 1
+
     record = load_record()
 
     if is_v1(record):
@@ -197,6 +254,13 @@ def cmd_check(args) -> int:
 
 def cmd_status(args) -> int:
     """Print a human-readable table of verification status for all tracked components."""
+    unaccounted = find_unaccounted_files()
+    if unaccounted:
+        print("WARNING: untracked component files (not in TRACKED_COMPONENTS or UNTRACKED_EXEMPT):")
+        for f in unaccounted:
+            print(f"  ✗  {f}")
+        print()
+
     record = load_record()
 
     if is_v1(record):
