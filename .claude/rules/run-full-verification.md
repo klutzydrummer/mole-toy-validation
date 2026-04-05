@@ -1,5 +1,9 @@
 ---
-description: "Triggered by: 'run full verification'. Defines the Phase B' agent verification process."
+paths:
+  - "references/components/**"
+  - "references/verification/**"
+  - "phase1/components/**"
+  - "phase2/components/**"
 ---
 
 # Full Verification Protocol
@@ -72,7 +76,7 @@ For each component spec in `references/components/`, dispatch a subagent that:
 
 1. Review the reports in `references/verification/reports/`
 2. If all pass (or pass-with-issues where issues are acceptable): `python utils/verify.py update --result pass --report references/verification/reports/ <component> [...]`
-   Use the component names from the table above (e.g., `causal_recurrence`, `mla_attention`, etc.).
+   Run `python utils/verify.py status` to see all tracked component names and current state.
 3. If any fail: fix the root cause in the spec or implementation, then re-run
 4. `git commit` including the updated `references/verification/last_verified.json` and reports
 
@@ -86,9 +90,8 @@ For each component spec in `references/components/`, dispatch a subagent that:
 (`phase1/model.py`, `phase2/model.py`) contain no math and are not separately verified —
 verification targets the component files they import from.
 
-If the user says "verify causal_recurrence" or names a specific component, run Phase B'
-for that component only, but still follow all 5 steps above for that component.
+If a specific component is named, run Phase B' for that component only, but still follow
+all 5 steps above for it.
 
-Component names accepted by `verify.py update`:
-`attention_rope_norms`, `mla_attention`, `diff_attention`, `mhc`, `mol_ffn`,
-`causal_recurrence`, `zone_ed_pipeline`, `boundary_router`
+Valid component names are the keys of `TRACKED_COMPONENTS` in `utils/verify.py`.
+Run `python utils/verify.py status` to see the current list and verification state.
