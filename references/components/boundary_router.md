@@ -125,7 +125,7 @@ boundary_mask = selected_idx == 1
 **Step (autoregressive inference):**
 
 ```python
-# hnet_boundary.py lines 169-192
+# hnet_boundary.py lines 168-192
 cos_sim = torch.einsum(
     "b d, b d -> b",
     F.normalize(self.q_proj_layer(inference_params.last_hidden_state), dim=-1),
@@ -159,21 +159,28 @@ Class `BoundaryRouter` at line 15. The router is owned by `OuterModel` (not Zone
 
 **Intentional deviations from H-Net reference:**
 
-1. **Top-M hard selection instead of soft argmax threshold.** H-Net uses `argmax(boundary_prob)` to select a variable number of boundary tokens. Our `BoundaryRouter` always selects exactly `M = L // R` tokens via `boundary_probs.topk(M)`. This enforces a fixed compression ratio per batch rather than a stochastic one, trading dynamic compression for training stability.
+1. **Threshold selection (`p >= 0.5`), variable M per sequence instead of global topk.** H-Net uses `argmax(boundary_prob) == 1` (equivalent to `p >= 0.5`) to produce a variable number of boundary tokens per sequence. Our `BoundaryRouter` does the same: `boundary_mask = (boundary_probs >= 0.5)` (`phase2/components/boundary_router.py:111`). M varies per sequence; M_max is the maximum across the batch. Position 0 is always selected since `boundary_probs[:, 0] = 1.0 >= 0.5`. This matches the H-Net formulation exactly.
 
-2. **Simplified compression loss.** H-Net uses the full ratio loss (Eq. 10 above). Our training loop uses a simpler quadratic proxy (`phase2/train.py:337`):
+2. **Full H-Net ratio loss used (no deviation).** Our training loop uses the full H-Net Eq. 10 ratio loss via `ratio_loss()` (`phase2/train.py:95–101`, called at `phase2/train.py:333`):
    ```
-   loss_comp = (boundary_probs.mean() - 1/R)²
+   ℒ_ratio = (N / (N-1)) * ((N-1) * F * G + (1-F) * (1-G))
+   F = (boundary_probs >= 0.5).float().mean()   # hard fraction selected
+   G = boundary_probs.mean()                     # average soft probability
+   N = 1 / target_rate
    ```
-   This penalizes deviation of the mean boundary probability from the target rate. It lacks the F·G product structure of the H-Net/DLCM loss but is easier to tune. `lambda_comp` is a hyperparameter passed at train time.
+   This is the full F·G product structure from H-Net Eq. 10. There is no deviation from H-Net here.
 
-3. **No STE (Straight-Through Estimator).** H-Net wraps confidence scores with `ste(c) = c + stopgradient(1 − c)` (H-Net Eq. 7) to round forward while preserving continuous gradients. We do not apply STE because top-M selection is not used as a multiplicative weight on the token representations; the boundary_probs themselves flow into Zone D's EMA without discretization.
+3. **STE IS applied in SimpleDecoder (`use_ste=True` default).** H-Net wraps confidence scores with `ste(c) = c + stopgradient(1 − c)` (H-Net Eq. 7). Our `SimpleDecoder` (`phase2/components/zone_d.py:105–106`) applies the same STE by default. The ablation config `outer_crl_learned_noste` sets `use_ste=False` to test the effect of removing STE. The config key `use_ste` flows through `phase2/model.py` into `SimpleDecoder.__init__`.
 
-4. **Cosine rule uses raw encoder outputs without W_q/W_k.** The `cosine_rule` mode (`hnet_boundary.py` equivalent would be W_q = W_k = I at all times, never updated). This is a strict subset of learned routing with frozen identity projections.
+4. **q/k index convention transposed relative to H-Net and DLCM.** H-Net computes `dot(q_{t-1}, k_t)` (q from the earlier token, k from the later token). DLCM uses the same convention. Our `learned_e2e` mode computes `dot(q_t, k_{t-1})` — q from the current (later) token, k from the prior (earlier) token (`phase2/components/boundary_router.py:102`):
+   ```python
+   sim = (q[:, 1:] * k[:, :-1]).sum(dim=-1)  # q_t · k_{t-1}
+   ```
+   At init (W_q=W_k=I) both conventions produce identical output because dot product is commutative for normalized vectors. After training, W_q specializes on the current token and W_k on the prior token — the reverse of both H-Net and DLCM. The cosine dissimilarity semantics are preserved; only the learned specialization of the two projections differs. **This deviation has not been ablated.**
 
-6. **`_no_reinit` omitted; replaced with post-init re-application.** The H-Net reference sets `_no_reinit = True` on W_q/W_k to prevent any downstream `_init_weights` sweep from overwriting the identity initialization. Our code instead initializes W_q/W_k to identity directly in `BoundaryRouter.__init__` (`phase2/components/boundary_router.py:51-52`) and then re-applies `nn.init.eye_` in `OuterModel.__init__` after the global `self.apply(_init_weights)` sweep (`phase2/model.py:156-158`). This achieves the same outcome — identity weights survive — via a different mechanism.
+5. **Cosine rule uses raw encoder outputs without W_q/W_k.** The `cosine_rule` mode normalizes encoder outputs directly without learned projections (`phase2/components/boundary_router.py:83–89`). This is equivalent to the H-Net RoutingModule with W_q = W_k = I frozen permanently. A strict subset of learned routing.
 
-5. **`learned_isolated` gradient isolation (our addition).** Neither H-Net nor DLCM propose stop-gradient through the boundary probability. This mode is an original ablation (A5) to test whether end-to-end LM gradients are necessary for learning useful boundaries, or whether the compression loss alone is sufficient. Expected result: near-random boundaries, confirming that LM signal is required.
+6. **`_no_reinit` omitted; replaced with post-init re-application.** The H-Net reference sets `_no_reinit = True` on W_q/W_k to prevent any downstream `_init_weights` sweep from overwriting the identity initialization. Our code instead initializes W_q/W_k to identity directly in `BoundaryRouter.__init__` (`phase2/components/boundary_router.py:51–52`) and then re-applies `nn.init.eye_` in `OuterModel.__init__` after the global `self.apply(_init_weights)` sweep (`phase2/model.py:157–159`). This achieves the same outcome — identity weights survive — via a different mechanism.
 
 **`boundary_entropy` diagnostic metric** (`phase2/train.py:84`):
 
@@ -190,22 +197,22 @@ This is the mean binary cross-entropy of the boundary probability distribution, 
 
 ## Verification checklist
 
-1. **Identity init preserved.** Confirm `BoundaryRouter.W_q.weight` and `W_k.weight` are `torch.eye(d)` immediately after construction for `learned_e2e` mode. Init at `phase2/components/boundary_router.py:51-52`; re-applied after `self.apply(_init_weights)` at `phase2/model.py:156-158`.
+1. **Identity init preserved.** Confirm `BoundaryRouter.W_q.weight` and `W_k.weight` are `torch.eye(d)` immediately after construction for `learned_e2e` mode. Init at `phase2/components/boundary_router.py:51–52`; re-applied after `self.apply(_init_weights)` at `phase2/model.py:157–159`.
 
-2. **p₀ = 1.0 always set.** In cosine_rule and learned_e2e modes, position 0 is padded with `value=1.0`. Confirm `boundary_probs[:, 0].all() == 1.0` for a freshly constructed model's first forward pass. (`phase2/components/boundary_router.py:89, 97`)
+2. **p₀ = 1.0 always set.** In cosine_rule and learned_e2e modes, position 0 is padded with `value=1.0`. Confirm `boundary_probs[:, 0].all() == 1.0` for a freshly constructed model's first forward pass. (`phase2/components/boundary_router.py:89` for cosine_rule, `:104` for learned_e2e)
 
-3. **Threshold selection (p > 0.5), variable M per sequence.** ⚠️ *Needs re-verification* — implementation changed from topk(M) to threshold (p > 0.5). `boundary_idx.shape[1]` is now `M_max` (max boundaries in batch), not a fixed `seq_len // R`. Position 0 is always selected since `boundary_probs[:, 0] = 1.0 > 0.5`. (`phase2/components/boundary_router.py:102–133`)
+3. **Threshold selection (`p >= 0.5`), variable M per sequence.** `boundary_mask = (boundary_probs >= 0.5)` (`phase2/components/boundary_router.py:111`). M_max is the max boundary count across the batch. Position 0 is always selected since `boundary_probs[:, 0] = 1.0 >= 0.5`. Uses `>=` not `>` to match H-Net `argmax == 1` convention.
 
-4. **`fixed_stride` has no parameters.** Confirm `len(list(model.router.parameters())) == 0` when `routing="fixed_stride"`. ⚠️ *Router is now at `model.router`, not `model.zone_e.router`.* (`phase2/model.py:142`)
+4. **`fixed_stride` has no parameters.** Confirm `len(list(model.router.parameters())) == 0` when `routing="fixed_stride"`. Router is at `model.router` (`phase2/model.py:142`).
 
-5. **`learned_isolated` mode removed.** ⚠️ *Needs re-verification* — `learned_isolated` mode no longer exists in the current `BoundaryRouter`. Only `cosine_rule`, `learned_e2e`, and `fixed_stride` are supported. (`phase2/components/boundary_router.py:41–53`)
+5. **`learned_isolated` mode removed.** Only `cosine_rule`, `learned_e2e`, and `fixed_stride` are supported. (`phase2/components/boundary_router.py:41–53`)
 
-6. **`cosine_rule` and `learned_e2e` produce identical output at init.** Immediately after construction (before any gradient steps), both modes should produce the same `boundary_probs` for the same input, since `learned_e2e` starts with identity projections. Verify numerically.
+6. **`cosine_rule` and `learned_e2e` produce identical output at init.** Immediately after construction (before any gradient steps), both modes produce the same `boundary_probs` for the same input. Both compute `normalize(enc_t) · normalize(enc_{t-1})` at init (W_q=W_k=I, dot product commutative). Verify numerically.
 
-7. **`loss_comp` shape and value.** `loss_comp = (boundary_probs.mean() - 1/R)**2`. At R=4, target mean is 0.25. Confirm this is a scalar and its value is near 0 when the router correctly selects 1/4 of positions. (`phase2/train.py:337`)
+7. **`ratio_loss` shape and value.** `ratio_loss(bp, target_rate)` returns a scalar. At F=G=1/N the loss equals 1.0 (its minimum). (`phase2/train.py:95–101`, called at `:333`)
 
-8. **`boundary_entropy` NaN guard.** Verify no NaN in `boundary_entropy()` when `boundary_probs` contains values exactly 0.0 or 1.0 (as produced by `fixed_stride`). The clamp at `1e-6` should handle this. (`phase2/train.py:95`)
+8. **`boundary_entropy` NaN guard.** Verify no NaN in `boundary_entropy()` when `boundary_probs` contains values exactly 0.0 or 1.0 (as produced by `fixed_stride`). The clamp at `1e-6` handles this. (`phase2/train.py:85–92`)
 
-9. **Gradient flow in `learned_e2e`.** Confirm that `W_q.weight.grad` and `W_k.weight.grad` are non-None after a backward pass with `routing="learned_e2e"`. (`phase2/components/boundary_router.py:91–97`)
+9. **Gradient flow in `learned_e2e`.** Confirm that `W_q.weight.grad` and `W_k.weight.grad` are non-None after a backward pass with `routing="learned_e2e"`. No `.detach()` in the learned_e2e branch. (`phase2/components/boundary_router.py:91–104`)
 
-10. **Ratio loss not used.** Confirm the training loop does not use H-Net Eq. 10 or DLCM Eq. 10. Only `loss_comp = (bp.mean() - 1/R)**2` is added to `loss_ntp`. This is an intentional deviation from both reference papers. (`phase2/train.py:337-338`)
+10. **Ratio loss IS used (H-Net Eq. 10).** Confirm the training loop uses `ratio_loss(bp, target_rate)` (H-Net Eq. 10, full F·G product form) added to `loss_ntp`. (`phase2/train.py:333–334`). The simple quadratic proxy `(bp.mean() - 1/R)**2` is NOT used.
