@@ -9,11 +9,11 @@ Phase 1 toy validation of the MoLE architecture (Mixture-of-LoRAs Encoder) on Wi
 **Phase 1 configs (9 total, d=512 ~28M params):**
 - Core: `baseline`, `mhc`, `mol`, `compose`
 - Attention variants: `mla` (MLA KV compression, arXiv:2405.04434), `diff_attn` (Diff Attn V2, Jan 2026), `diff_mla` (novel Diff V2 + MLA composition)
-- Ablations: `baseline_wide` (widened FFN, param-matched to mol for Q1 fair comparison), `mol_single` (capacity-matched single LoRA, no routing, for Q2)
+- Ablations: `baseline_wide` (widened FFN, param-matched to mol for Q1 fair comparison), `mol_single` (rank=72, exact capacity-matched single LoRA, no routing, for Q2)
 
 **Phase 1 scaling study (10 configs: 5 × d=256, 5 × d=768):**
 - Configs: `baseline`, `mla`, `diff_attn`, `diff_mla`, `mol` at d=256 (n_heads=4, ~6M) and d=768 (n_heads=12, ~58M)
-- Question: Is MLA's KV compression failure a **ratio problem** (d_c/d=25% too high) or an **absolute dimension problem** (d_c=128 too few dims regardless of ratio)?
+- Note: d_c/d=25% is held constant at all scales (d=256→d_c=64, d=512→d_c=128, d=768→d_c=192). The study measures how MLA performance scales relative to other architectures as absolute bottleneck dimension increases — it cannot independently isolate ratio vs. absolute dimension effects, since both change proportionally with d.
 - Checkpoints use prefix `{cfg}_d{d}_seed42` to avoid collision with d=512 runs
 - Run: `bash run_experiments.sh phase1_scaling`
 
@@ -41,7 +41,7 @@ nix-shell --run "ruff check ."                  # lint
 `shell.nix` provides CPU-only torch + torchinfo + ruff. A single forward pass at full production dims (d=512, seq=256, batch=1) costs ~200 MB RAM — safe to run locally.
 
 `shape_check.py` validates:
-- Output shape contracts for all 25 non-upcycle configs (9 Phase 1 + 10 scaling + 6 Phase 2)
+- Output shape contracts for all 24 non-upcycle configs (9 Phase 1 + 10 scaling + 5 Phase 2 — outer_crl_r2 removed)
 - No NaN/Inf in logits
 - boundary_probs in [0, 1] for all Phase 2 configs
 
@@ -140,6 +140,10 @@ Dataset: WikiText-103-raw, BPE tokenizer (vocab=4096, sentencepiece), seq_len=25
 
 See `checkpoints/report.md` (regenerate: `python utils/reporter.py`) and memory for full tables and ablation findings.
 
+**All results are single-seed (seed=42).** Multi-seed reruns (3 seeds each) are required before Q1 (mol vs. baseline_wide) and Q2 (mol vs. mol_single) conclusions are claimable. Key deltas are small (Q1: 0.0086 BPC, Q2: 0.0075 BPC) — treat as preliminary until multi-seed runs confirm.
+
+**`diff_attn` capacity caveat:** `diff_attn`'s best result (3.5131 BPC) is NOT a controlled comparison vs. `baseline`. Doubled Q heads add ~25% more attention parameters. The improvement reflects architecture + capacity advantage combined.
+
 Do not compose mHC+MoL+HDC until mHC's grad norm issue is diagnosed. The rising grad norm is continuous — observed 0.80→1.37 over 100k steps with no stabilization. Diagnostic: `python phase1/train.py --config mhc --max_lr 1.5e-4 --total_steps 25000`.
 
 ---
@@ -150,16 +154,15 @@ Do not compose mHC+MoL+HDC until mHC's grad norm issue is diagnosed. The rising 
 
 **Run outer_crl first, always.** It uses the cosine_rule router (no learned params) and validates the pipeline before adding learned routing. If it doesn't improve on a strided baseline, the pipeline is broken.
 
-**Run order:** `outer_crl` → `outer_crl_r2` (sanity) → `outer_crl_learned` → `outer_crl_full` / `outer_crl_full_learned` → transformer variants → ablations
+**Run order:** `outer_crl` → `outer_crl_learned` → `outer_crl_full` / `outer_crl_full_learned` → transformer variants → ablations
 
 Phase 2 training: 50k steps, alpha=0.03 (H-Net ratio loss), alpha warmup over first 2k steps.
 
-**10 configs (OuterModel.CONFIGS):**
+**9 configs (OuterModel.CONFIGS):**
 
 | Config | Encoder | Router | Notes |
 |--------|---------|--------|-------|
 | `outer_crl` | CRL (282K, bottlenecked) | cosine_rule | Baseline — run first |
-| `outer_crl_r2` | CRL | cosine_rule | target_rate=0.5 — sanity lower bound |
 | `outer_crl_learned` | CRL | learned_e2e | Learned routing on bottlenecked CRL |
 | `outer_crl_full` | CRL (1.57M, full-width) | cosine_rule | No bottleneck confound |
 | `outer_crl_full_learned` | CRL full | learned_e2e | Full CRL + learned routing |

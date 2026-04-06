@@ -17,7 +17,7 @@ Base config: `d=512, n_layers=8, n_heads=8, SwiGLU, RoPE, RMSNorm, weight-tying`
 | mhc (rerun, n=4, KromHC) | TBD | ~29M | 100k | — | pending |
 | baseline | 3.5875 | 27.8M | 100k | N/A (pre-seed-control) | complete |
 | baseline_wide | TBD | ~31.1M | 100k | — | pending |
-| mol_single | TBD | ~31.1M | 100k | — | pending |
+| mol_single (rank=72) | TBD | ~31.1M | 100k | — | pending (seed42 run at rank=64 invalidated — rank corrected to 72) |
 
 **Important caveats:**
 - All completed runs predate seed control (added 2026-03-23). Seeds not recorded.
@@ -42,14 +42,13 @@ or worst seed of new config beats best seed of baseline.
 
 ---
 
-## Phase 2 — HDC compression pipeline
+## Phase 2 — Outer encoder study
 
 ### Status: Not started (pending Phase 1 completion)
 
-Run order: `hdc_rulebased → hdc_gate → hdc_stride → hdc_r2/r8`
+Run order: `outer_crl → outer_crl_learned → outer_crl_full → outer_crl_full_learned → outer_transformer → outer_diff_attn → outer_mla → outer_strided → outer_crl_learned_noste`
 
-A1 success criterion: `hdc_gate` val BPC < 3.5702 (mol Phase 1 baseline),
-compression ratio stable near 0.25, boundary_entropy decreasing.
+A1 success criterion: `outer_crl_learned` val BPC < `outer_strided` val BPC at same target compression ratio (0.25), boundary_entropy decreasing.
 
 ---
 

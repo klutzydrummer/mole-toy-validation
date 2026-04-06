@@ -14,7 +14,7 @@ This study asks three separable questions. Each requires different controls.
 |----------|------|--------------------|
 | **Q1 — Does MoL's routing mechanism help, beyond just having more parameters?** | Total trainable params | `mol` vs. `baseline_wide` (matched total params) |
 | **Q2 — Is routing over adapters better than a single high-rank adapter?** | Total LoRA params | `mol` vs. `mol_single` (same total LoRA params, no routing) |
-| **Q3 — Does content-aware compression (HDC) improve over fixed-stride compression?** | Active FLOPs + training steps | `hdc_gate` vs. `hdc_stride` (same steps, same compression ratio) |
+| **Q3 — Does content-aware compression improve over fixed-stride compression?** | Active FLOPs + training steps | `outer_crl_learned` vs. `outer_strided` (same steps, same target compression ratio) |
 
 Q1 and Q2 are Phase 1 questions. Q3 is the Phase 2 A1 question.
 The original Phase 1 comparison (mol vs. baseline at different total param counts) does not
@@ -43,21 +43,21 @@ d_ff gives approximately d_ff ≈ 1600 (vs. current 1408). Verify empirically th
 
 MoL has 9 adapter sets (1 shared + 8 experts) each at rank=8, for 3 projections (gate/up/down).
 Total LoRA params per layer = 9 × 3 × (d×rank + rank×d_ff) = 9 × 46,080 = 414,720.
-An equivalent single LoRA has rank = 9 × 8 = **rank-72** (or rank-64 as a round number).
+An equivalent single LoRA has rank = 9 × 8 = **rank-72** (exact capacity match).
 
-**`mol_single`**: MoLFFN with a single LoRA at rank=64 applied on top of base SwiGLU, no
-routing. Same base FFN, same total adapter params, no expert mechanism.
+**`mol_single`**: MoLFFN with a single LoRA at rank=72 applied on top of base SwiGLU, no
+routing. Same base FFN, same total adapter params (exact match), no expert mechanism.
 
 This tests: is the routing + specialization mechanism responsible for MoL's gains, or is it
 simply that more LoRA capacity (regardless of how it is structured) improves the model?
 
 ### Q3: Content-aware routing vs. fixed routing (Phase 2)
 
-This comparison already exists in the experimental plan: `hdc_gate` vs. `hdc_stride`.
-Both must be run for the same number of steps (50k) at the same target compression ratio (R=4).
+The comparison is `outer_crl_learned` vs. `outer_strided`.
+Both must be run for the same number of steps (50k) at the same target compression ratio (target_rate=0.25).
 BPC comparison between these two configs is the primary A1 claim.
 
-**Do not** compare `hdc_gate` BPC directly to `mol` BPC to claim HDC improves on mol —
+**Do not** compare `outer_crl_learned` BPC directly to `mol` BPC to claim Phase 2 improves on Phase 1 —
 they train for different step counts (50k vs. 100k). Use `compression_ratio × FLOPs` framing
 or note the step count difference explicitly.
 
@@ -105,10 +105,10 @@ than Q3 (FLOPs control) for interpreting MoL's result.
 the mHC diagnostic runs (`--max_lr 1.5e-4` and `7.5e-5`) are complete, do not re-run these
 at 3 seeds. They are not required for the Q1/Q2 questions.
 
-### Phase 2 — no changes to the plan
+### Phase 2 — outer encoder study
 
-The Phase 2 config set is already structured around Q3. No additions required.
-The comparison table in CLAUDE.md (`hdc_gate` vs. `hdc_stride` as the A1 claim) is correct.
+The Phase 2 config set is structured around Q3. 9 configs (OuterModel.CONFIGS).
+The A1 claim is `outer_crl_learned` vs. `outer_strided`.
 
 ---
 
@@ -119,7 +119,7 @@ Based on literature consensus (Melis et al. 2018, NLP ablation practice):
 **Minimum**: 3 seeds for any config used in a primary claim.
 **Primary claims** (Q1, Q2): `baseline`, `baseline_wide`, `mol`, `mol_single` — all need 3 seeds.
 **Supporting configs** (`mhc`, `compose`): 1 seed until optimization issues are resolved.
-**Phase 2**: 3 seeds for `hdc_gate` (primary A1 config); 1 seed for all others.
+**Phase 2**: 3 seeds for `outer_crl_learned` (primary A1 config); 1 seed for all others.
 
 **Reporting**: Always report mean ± std across seeds. A result is only claimable if:
 - The margin is larger than 3× the cross-seed standard deviation, OR
@@ -209,10 +209,9 @@ Phase 1 (revised):
   6. mhc             × 3 seeds   (after diagnostic, if stable)
   7. compose         × 1 seed    (only after mhc is resolved)
 
-Phase 2 (unchanged — run after Phase 1 mol result is confirmed):
-  smoke_test → hdc_rulebased → hdc_gate × 3 seeds → hdc_stride × 3 seeds
-  → hdc_r2, hdc_r8, hdc_e2e_isolated × 1 seed each
-  → hdc_upcycle_stride, hdc_upcycle_gate × 1 seed each
+Phase 2 (run after Phase 1 mol result is confirmed):
+  smoke_test → outer_crl → outer_crl_learned × 3 seeds → outer_crl_full → outer_crl_full_learned
+  → outer_transformer → outer_diff_attn → outer_mla → outer_strided → outer_crl_learned_noste
 ```
 
 ---
@@ -229,10 +228,10 @@ Phase 2 (unchanged — run after Phase 1 mol result is confirmed):
 - mol BPC ≈ mol_single BPC → a single high-rank LoRA is sufficient; routing adds nothing
 - mol BPC > mol_single BPC → routing over adapters is worse than a unified high-rank adapter
 
-### Q3 answer (hdc_gate vs. hdc_stride — same steps, same compression ratio)
-- hdc_gate BPC < hdc_stride BPC → content-aware routing improves over fixed stride
-- hdc_gate BPC ≈ hdc_stride BPC → routing adds no value; compression mechanism is what matters
-- hdc_gate BPC > hdc_stride BPC → learned routing is actively harmful at this scale
+### Q3 answer (outer_crl_learned vs. outer_strided — same steps, same compression ratio)
+- outer_crl_learned BPC < outer_strided BPC → content-aware routing improves over fixed stride
+- outer_crl_learned BPC ≈ outer_strided BPC → routing adds no value; compression mechanism is what matters
+- outer_crl_learned BPC > outer_strided BPC → learned routing is actively harmful at this scale
 
 ### Cross-question interpretation
 If Q1 shows mol ≈ baseline_wide (capacity explains the gain) AND Q2 shows mol < mol_single

@@ -1,9 +1,8 @@
 """
 Zone E: Pluggable encoder architectures for the outer encoder study.
 
-Tracked by two component specs:
+Tracked by:
   - references/components/zone_ed_pipeline.md  (encoder role in the pipeline)
-  - references/components/mol_ffn.md           (MoLFFN usage via TransformerBlock)
 
 Sources: references/sources/papers/hnet_2507.07955.md,
          references/sources/code/hnet_boundary.py
@@ -58,13 +57,14 @@ class CRLEncoderFull(nn.Module):
         self.recurrence = nn.ModuleList([
             CausalRecurrenceLayer(d, log_a_init=3.0) for _ in range(3)
         ])
-        self.norm_out = RMSNorm(d)
+        # No norm_out: each CausalRecurrenceLayer already ends with self.norm(out_proj(out)).
+        # CRLEncoder also has no extra outer norm — both variants are consistent.
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """x: [B, L, d] → [B, L, d]"""
         for rec in self.recurrence:
             x = rec(x)
-        return self.norm_out(x)
+        return x
 
 
 class TransformerEncoder(nn.Module):

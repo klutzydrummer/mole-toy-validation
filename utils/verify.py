@@ -79,7 +79,6 @@ TRACKED_COMPONENTS: dict[str, list[str]] = {
     ],
     "mol_ffn": [
         "phase1/components/mol_ffn.py",
-        "phase2/components/zone_e.py",
     ],
     "causal_recurrence": [
         "phase2/components/causal_recurrence.py",

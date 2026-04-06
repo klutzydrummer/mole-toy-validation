@@ -40,7 +40,8 @@ except Exception:
         return None
 
 
-def get_lr(step, warmup_steps=1000, max_lr=3e-4, min_lr=1e-5, total_steps=50000):
+def get_lr(step, warmup_steps=1000, max_lr=3e-4, min_lr=1e-5, total_steps=100000):
+    # Default matches Phase 1 run length (100k steps). Phase 2 passes 50k explicitly.
     if step < warmup_steps:
         return min_lr + (max_lr - min_lr) * step / warmup_steps
     progress = (step - warmup_steps) / max(1, total_steps - warmup_steps)

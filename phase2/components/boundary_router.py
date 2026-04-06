@@ -91,7 +91,14 @@ class BoundaryRouter(nn.Module):
         else:  # learned_e2e
             q = F.normalize(self.W_q(enc), dim=-1)             # [B, L, d]
             k = F.normalize(self.W_k(enc), dim=-1)             # [B, L, d]
-            # Compare each q_t to k_{t-1} (adjacent, NOT ema) — H-Net Eq. 4
+            # Convention (intentional deviation from H-Net): dot(q_t, k_{t-1}).
+            # H-Net RoutingModule uses q from hidden[:, :-1] and k from hidden[:, 1:],
+            # i.e. dot(q_{t-1}, k_t). Our convention is the transpose. Both compute the
+            # same cosine similarity value (dot product is commutative for normalized
+            # vectors), so behaviour is identical at init (W_q=W_k=I). After learning,
+            # W_q specializes on the "current" token and W_k on the "prior" token (vs.
+            # the H-Net convention). This deviation has not been ablated.
+            # See: references/components/boundary_router.md Intentional deviation 4.
             sim = (q[:, 1:] * k[:, :-1]).sum(dim=-1)           # [B, L-1]
             p   = (1.0 - sim) / 2.0                            # [B, L-1]
             boundary_probs = F.pad(p, (1, 0), value=1.0)       # [B, L], pos 0 = 1.0
@@ -99,7 +106,9 @@ class BoundaryRouter(nn.Module):
         # ── Threshold selection: p > 0.5, variable M per sequence ─────────────
         # Position 0 is always 1.0 → always selected. Subsequent positions selected
         # where cosine dissimilarity is high (tokens differ from predecessor).
-        boundary_mask = (boundary_probs > 0.5)                 # [B, L] bool
+        # threshold: p >= 0.5 per H-Net argmax(boundary_prob) == 1 convention
+        # (matches zone_d.py boundary_mask threshold — must stay consistent)
+        boundary_mask = (boundary_probs >= 0.5)                # [B, L] bool
         counts        = boundary_mask.sum(dim=1)               # [B]
         M_max         = int(counts.max().item())
         M_max         = max(M_max, 1)                          # at least 1 slot

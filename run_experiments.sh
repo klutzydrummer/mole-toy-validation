@@ -12,7 +12,7 @@
 #   bash run_experiments.sh outer_crl            # single Phase 2 config
 #   bash run_experiments.sh phase2 --shutdown    # shutdown instance when done
 #
-# Phase 2 run order: outer_crl first (validates pipeline), then outer_crl_r2,
+# Phase 2 run order: outer_crl first (validates pipeline, cosine rule),
 # then learned routing, then full-width CRL, then transformer variants, then ablations.
 #
 # On Lightning.ai free tier (T4):
@@ -137,12 +137,12 @@ run_phase1() {
 
     # Config-specific overrides
     # baseline_wide: d_ff=1600 to match mol total param count (~31.1M) for Q1 fair comparison
-    # mol_single: mol_rank=64 (= 8 experts × rank 8) for Q2 capacity-matched single-LoRA
+    # mol_single: mol_rank=72 (= 1 shared + 8 experts × rank 8 = rank-72 exact capacity match)
     EXTRA_FLAGS=""
     if [ "$cfg" = "baseline_wide" ]; then
         EXTRA_FLAGS="--d_ff 1600"
     elif [ "$cfg" = "mol_single" ]; then
-        EXTRA_FLAGS="--mol_rank 64"
+        EXTRA_FLAGS="--mol_rank 72"
     fi
 
     python phase1/train.py \
@@ -304,7 +304,6 @@ case "$TARGET" in
     # Phase 2 — smoke test gates ALL configs, no exceptions
     run_smoke_test
     run_phase2 outer_crl             # pipeline validation first (cosine rule, no learned params)
-    run_phase2 outer_crl_r2          # sanity: 50% compression lower bound
     run_phase2 outer_crl_learned     # learned routing on bottlenecked CRL
     run_phase2 outer_crl_full        # full-width CRL (no bottleneck confound)
     run_phase2 outer_crl_full_learned
@@ -331,7 +330,6 @@ case "$TARGET" in
     # smoke test gates ALL Phase 2 configs, no exceptions
     run_smoke_test
     run_phase2 outer_crl
-    run_phase2 outer_crl_r2
     run_phase2 outer_crl_learned
     run_phase2 outer_crl_full
     run_phase2 outer_crl_full_learned
@@ -375,7 +373,7 @@ case "$TARGET" in
     ;;
 
   # Individual Phase 2 configs (standard, 50k steps)
-  outer_crl | outer_crl_r2 | outer_crl_learned | outer_crl_full | outer_crl_full_learned | \
+  outer_crl | outer_crl_learned | outer_crl_full | outer_crl_full_learned | \
   outer_transformer | outer_diff_attn | outer_mla | outer_strided | outer_crl_learned_noste)
     run_smoke_test
     run_phase2 "$TARGET"
@@ -387,7 +385,7 @@ case "$TARGET" in
     echo "Phase 1 configs: baseline baseline_wide mhc mol mol_single compose mla diff_attn diff_mla"
     echo "Scaling study:   bash run_experiments.sh phase1_scaling"
     echo "                 (runs baseline mla diff_attn diff_mla mol at d=256 and d=768)"
-    echo "Phase 2 configs: outer_crl outer_crl_r2 outer_crl_learned"
+    echo "Phase 2 configs: outer_crl outer_crl_learned"
     echo "                 outer_crl_full outer_crl_full_learned"
     echo "                 outer_transformer outer_diff_attn outer_mla"
     echo "                 outer_strided outer_crl_learned_noste"

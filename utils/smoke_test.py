@@ -20,8 +20,9 @@ CHECKS (all must pass):
   4. No NaN or inf in any metric at any step.
 
 Result is written to checkpoints/smoke_test_result.json with the current
-git blob hash of phase2/model.py. run_experiments.sh reads this file and
-blocks Phase 2 training if result != "pass" or the model hash has changed.
+git blob hashes of phase2/model.py and all phase2/components/*.py files.
+run_experiments.sh reads this file and blocks Phase 2 training if result != "pass"
+or any component file hash has changed since the last smoke test run.
 
 Usage:
   python utils/smoke_test.py                # run smoke test (1000 steps)
@@ -295,6 +296,17 @@ def cmd_run(args) -> int:
     return 0 if result["pass"] else 1
 
 
+def _component_files() -> list[str]:
+    """Return the list of Phase 2 files whose hashes are tracked by the smoke test."""
+    return [
+        "phase2/model.py",
+        "phase2/components/causal_recurrence.py",
+        "phase2/components/zone_e.py",
+        "phase2/components/zone_d.py",
+        "phase2/components/boundary_router.py",
+    ]
+
+
 def cmd_check_only(args) -> int:
     """Check stored result without running training."""
     if not RESULT_FILE.exists():
@@ -304,13 +316,25 @@ def cmd_check_only(args) -> int:
     with open(RESULT_FILE) as f:
         stored = json.load(f)
 
-    current_hash = _git_blob_hash("phase2/model.py")
-    stored_hash  = stored.get("model_hash")
+    # Support both old schema (model_hash) and new schema (component_hashes).
+    # Old schema only hashed phase2/model.py — treat as stale so a fresh run is forced.
+    if "component_hashes" not in stored:
+        print("SMOKE TEST: stored result uses old schema (model_hash only). Re-run required.")
+        print("  Re-run: python utils/smoke_test.py")
+        return 1
 
-    if current_hash != stored_hash:
-        print("SMOKE TEST: phase2/model.py has changed since last smoke test.")
-        print(f"  stored hash:  {stored_hash}")
-        print(f"  current hash: {current_hash}")
+    stored_hashes = stored["component_hashes"]
+    stale_files = []
+    for rel_path in _component_files():
+        current = _git_blob_hash(rel_path)
+        stored_h = stored_hashes.get(rel_path)
+        if current != stored_h:
+            stale_files.append(rel_path)
+
+    if stale_files:
+        print("SMOKE TEST: component file(s) changed since last smoke test:")
+        for f in stale_files:
+            print(f"  {f}")
         print("  Re-run: python utils/smoke_test.py")
         return 1
 
@@ -321,21 +345,26 @@ def cmd_check_only(args) -> int:
         print("  Re-run after fixing the root cause: python utils/smoke_test.py")
         return 1
 
-    print(f"SMOKE TEST: pass (run at {stored.get('run_at', 'unknown')}, "
-          f"model hash {stored_hash[:12]})")
+    short_hashes = {f: (h[:12] if h else "?") for f, h in stored_hashes.items()}
+    print(f"SMOKE TEST: pass (run at {stored.get('run_at', 'unknown')})")
+    for f, h in short_hashes.items():
+        print(f"  {f}: {h}")
     return 0
 
 
 def _save_result(result: dict) -> None:
     RESULT_FILE.parent.mkdir(parents=True, exist_ok=True)
-    now          = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    model_hash   = _git_blob_hash("phase2/model.py")
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    # Hash all phase2 component files, not just model.py.
+    # After the 2026-04-05 component extraction, mathematical code lives in
+    # phase2/components/ — changes there must invalidate the stored smoke test.
+    component_hashes = {f: _git_blob_hash(f) for f in _component_files()}
     payload = {
-        "result":     "pass" if result["pass"] else "fail",
-        "run_at":     now,
-        "model_hash": model_hash,
-        "checks":     result["checks"],
-        "metrics":    result["metrics"],
+        "result":           "pass" if result["pass"] else "fail",
+        "run_at":           now,
+        "component_hashes": component_hashes,
+        "checks":           result["checks"],
+        "metrics":          result["metrics"],
     }
     with open(RESULT_FILE, "w") as f:
         json.dump(payload, f, indent=2)

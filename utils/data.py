@@ -12,12 +12,35 @@ Call set_dataset() and set_tokenizer() before get_dataloader().
 Tokenizer models and split arrays are cached in data/ on first use.
 """
 
+import hashlib
 import os
 import sys
 
 import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset
+
+# SHA-256 of the committed data/wikitext103_spm.model (computed 2026-04-06).
+# Verified against the file trained on the first 20M chars of WikiText-103-raw train split.
+# If the stored file does not match this checksum, raise an error rather than silently
+# producing different tokenization results on a different machine or after accidental overwrite.
+_WIKITEXT103_SPM_SHA256 = "6d394896178ac1d794b89d1f2d2b116691972403261a31ca9afb9ab3b1e8fd16"
+
+
+def _verify_spm_checksum(path: str) -> None:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    actual = h.hexdigest()
+    if actual != _WIKITEXT103_SPM_SHA256:
+        raise RuntimeError(
+            f"Tokenizer file checksum mismatch at {path}\n"
+            f"  expected: {_WIKITEXT103_SPM_SHA256}\n"
+            f"  actual:   {actual}\n"
+            "Delete the file and re-run to retrain the tokenizer, then commit the new file "
+            "and update _WIKITEXT103_SPM_SHA256 in utils/data.py."
+        )
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
 ENWIK8_PATH = os.path.join(DATA_DIR, "enwik8")
@@ -113,6 +136,7 @@ def _prepare_wikitext103():
         print(f"  Tokenizer saved to {model_path}")
 
     sp = spm_lib.SentencePieceProcessor()
+    _verify_spm_checksum(model_path)
     sp.load(model_path)
 
     # ── Tokenize splits ───────────────────────────────────────────────────────

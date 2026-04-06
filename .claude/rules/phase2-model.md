@@ -41,5 +41,4 @@ python utils/verify.py update --result pass --report <report_path> <component_na
 
 `verify.py check` blocks cloud training until updated with a passing result.
 
-**Note:** `zone_e.py` is tracked by both `mol_ffn` and `zone_ed_pipeline` components.
-Changing it marks BOTH stale — verify both before pushing.
+**Note:** `zone_e.py` is tracked only by `zone_ed_pipeline`. Changing it marks `zone_ed_pipeline` stale.

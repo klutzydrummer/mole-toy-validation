@@ -79,8 +79,9 @@ class OuterModel(nn.Module):
         # ── Ablations ─────────────────────────────────────────────────────────
         "outer_crl_learned_noste": dict(encoder="crl",         router="learned_e2e",
                                         use_ste=False),
-        "outer_crl_r2":            dict(encoder="crl",         router="cosine_rule",
-                                        target_rate=0.5),
+        # outer_crl_r2 removed: target_rate=0.5 has no effect under cosine_rule routing
+        # (target_rate is only read in fixed_stride mode). The config was behaviourally
+        # identical to outer_crl. outer_strided already provides the fixed-stride baseline.
         # Encoder param counts at d=512 (for cross-config interpretation):
         #   outer_crl / outer_crl_learned          CRLEncoder (d//4=128 bottleneck):  ~282K
         #   outer_crl_full / outer_crl_full_learned CRLEncoderFull (d=512, no proj):  ~1.57M

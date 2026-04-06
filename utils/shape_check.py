@@ -4,7 +4,7 @@ Shape validation — single forward pass of every model config on CPU.
 Checks:
   - Phase 1 (9 configs) at d=512, seq=256, batch=1
   - Phase 1 scaling (10 configs: baseline/mla/diff_attn/diff_mla/mol at d=256 and d=768)
-  - Phase 2 (10 configs) at d=512
+  - Phase 2 (9 configs) at d=512
 
 Skips upcycle configs (they require a pre-trained mol checkpoint).
 
@@ -53,7 +53,7 @@ def check_phase1():
         ("baseline_wide", {"d_ff": 1600}),  # d_ff scaled to match mol params
         ("mhc",           {}),
         ("mol",           {}),
-        ("mol_single",    {}),
+        ("mol_single",    {"mol_rank": 72}),  # rank=72 exact capacity match to mol (9×8)
         ("compose",       {}),
         ("mla",           {}),
         ("diff_attn",     {}),
@@ -61,15 +61,18 @@ def check_phase1():
     ]
 
     results = []
+    param_counts = {}
     for name, kwargs in configs:
         print(f"\n{'='*60}")
         print(f"Phase 1 — {name}")
         print("="*60)
         try:
+            # mol_rank default is 8; mol_single overrides to 72 via kwargs (exact capacity match)
+            mol_rank = kwargs.pop("mol_rank", 8)
             model = ToyTransformer(
                 config=name, d=D, n_layers=N_LAYERS, n_heads=N_HEADS,
                 vocab_size=VOCAB, max_len=SEQ_LEN + 64,
-                mol_rank=8,
+                mol_rank=mol_rank,
                 **kwargs,
             ).eval()
 
@@ -86,7 +89,8 @@ def check_phase1():
             assert not torch.isnan(out).any(), "NaN in output logits"
             assert not torch.isinf(out).any(), "Inf in output logits"
 
-            print(f"\n[PASS] {name}: output {tuple(out.shape)}")
+            param_counts[name] = sum(p.numel() for p in model.parameters())
+            print(f"\n[PASS] {name}: output {tuple(out.shape)}  params={param_counts[name]:,}")
             results.append((name, True, None))
 
         except Exception as e:
@@ -94,6 +98,35 @@ def check_phase1():
             print(f"\n[FAIL] {name}: {e}")
             traceback.print_exc()
             results.append((name, False, str(e)))
+
+    # Q1 fairness check: baseline_wide must be within 5% of mol total param count.
+    # d_ff=1600 is an approximation — STUDY_DESIGN.md documents the derivation as
+    # "approximately d_ff ≈ 1600". Actual gap at d=512 is ~3.2% (acceptable per study design).
+    # This check catches gross misconfigurations (e.g., accidentally using default d_ff=1408).
+    if "mol" in param_counts and "baseline_wide" in param_counts:
+        mol_p = param_counts["mol"]
+        bw_p  = param_counts["baseline_wide"]
+        ratio = abs(bw_p - mol_p) / mol_p
+        if ratio >= 0.05:
+            print(f"\n[FAIL] Q1 fairness: baseline_wide ({bw_p:,}) and mol ({mol_p:,}) "
+                  f"differ by {ratio:.1%} (>5%). Adjust d_ff.")
+            results.append(("Q1_param_match", False, f"baseline_wide/mol ratio {ratio:.3f}"))
+        else:
+            print(f"\n[PASS] Q1 param match: baseline_wide={bw_p:,}  mol={mol_p:,}  "
+                  f"diff={ratio:.1%} (within 5% tolerance)")
+
+    # Q2 fairness check: mol_single (rank=72) must be within 2% of mol total param count.
+    if "mol" in param_counts and "mol_single" in param_counts:
+        mol_p = param_counts["mol"]
+        ms_p  = param_counts["mol_single"]
+        ratio = abs(ms_p - mol_p) / mol_p
+        if ratio >= 0.02:
+            print(f"\n[FAIL] Q2 fairness: mol_single ({ms_p:,}) and mol ({mol_p:,}) "
+                  f"differ by {ratio:.1%} (>2%). Adjust mol_single rank.")
+            results.append(("Q2_param_match", False, f"mol_single/mol ratio {ratio:.3f}"))
+        else:
+            print(f"\n[PASS] Q2 param match: mol_single={ms_p:,}  mol={mol_p:,}  "
+                  f"diff={ratio:.1%}")
 
     return results
 

@@ -32,14 +32,14 @@ class SingleLoRAFFN(nn.Module):
     """
     Single high-rank LoRA over a SwiGLU base — no routing, no experts.
 
-    Q2 ablation control for MoLFFN: same base FFN + approximately equal total
+    Q2 ablation control for MoLFFN: same base FFN + exactly equal total
     LoRA parameter count, but no routing or specialization mechanism.
 
     MoLFFN has 9 adapter sets (1 shared + 8 experts) × rank 8 = rank-72 equivalent.
-    We use rank=64 (round number) as the matched-capacity baseline.
+    We use rank=72 (exact capacity match) as the Q2 baseline.
     """
 
-    def __init__(self, d: int, rank: int = 64, d_ff: int = None):
+    def __init__(self, d: int, rank: int = 72, d_ff: int = None):
         super().__init__()
         if d_ff is None:
             d_ff = int(d * 8 / 3)
