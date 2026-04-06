@@ -1,7 +1,7 @@
 # Phase B' Verification Report: mol_ffn
 
 **Date:** 2026-04-06
-**Supersedes:** prior report dated 2026-04-05
+**Supersedes:** prior report dated 2026-04-06
 **Component:** `mol_ffn` — Mixture-of-LoRAs FFN
 **Spec:** `references/components/mol_ffn.md`
 **Implementation:** `phase1/components/mol_ffn.py` (sole tracked file — zone_e.py removed from scope)
@@ -9,21 +9,38 @@
 
 ---
 
-## Overall verdict: PASS with issues
+## Overall verdict: PASS
 
 All routing logic is correct and all equations trace verbatim to the DeepSeek-V3 paper.
-The issues are documentation-only: stale line-number pointers (pre-refactor model.py references)
-and one stale method name (`get_mol_stats` → `get_load_stats`) in checklist item 11.
+Documentation issues identified in the prior report have been corrected in the spec:
+stale line-number pointers updated to `phase1/components/mol_ffn.py`, method name corrected
+(`get_mol_stats` → `get_load_stats`), and rank description corrected (rank 4 → rank 8).
 No mathematical errors. No behavioral deviations from spec intent.
 
 ---
 
-## Changes since last report (2026-04-05)
+## Changes since last report (2026-04-06)
 
-- `zone_e.py` removed from `TRACKED_COMPONENTS["mol_ffn"]` — no longer in verification scope.
-  Prior report's Issue 2 (tracking concern) is now resolved.
-- `SingleLoRAFFN.rank` default changed from 64 to 72 (exact capacity match for Q2 ablation).
-  Docstring updated to "rank=72 (exact capacity match)". Verified correct — see section below.
+Spec corrections applied to `references/components/mol_ffn.md`:
+
+1. **Description line**: "rank-4 LoRA adapter" corrected to "rank-8 LoRA adapter" (matches
+   `MoLFFN.__init__` default `rank=8` at `mol_ffn.py:78`).
+
+2. **Deviations table**: "Default: 8 experts, top-2, rank 4" corrected to "rank 8".
+
+3. **Checklist items 1–12**: All stale `model.py` line references updated to correct
+   `mol_ffn.py` locations. Specific updates:
+   - Item 1: `model.py:279` → `mol_ffn.py:118`
+   - Item 2: lines 280–282 → `mol_ffn.py:119–121`
+   - Item 3: line 283 → `mol_ffn.py:122`
+   - Item 4: line 220 → `mol_ffn.py:24`
+   - Item 5: line 286 → `mol_ffn.py:125`
+   - Item 6: line 316 → `mol_ffn.py:109` (register_buffer) and `mol_ffn.py:159` (no_grad block)
+   - Item 8: line 299 → `mol_ffn.py:144–148`
+   - Item 9: line 221, "rank=4, scale=0.25" → `mol_ffn.py:25`, "rank=8, scale=0.125"
+   - Item 10: lines 290–292, 302 → `mol_ffn.py:144–145, 155`
+   - Item 11: `model.get_mol_stats()` line 321 → `MoLFFN.get_load_stats()` at `mol_ffn.py:170`
+   - Item 12: line 267 → `mol_ffn.py:106`
 
 ---
 
@@ -98,7 +115,7 @@ Gate and up corrections applied BEFORE silu; down corrections applied AFTER. —
 | No node/group-limited routing | VERIFIED — no group masking in forward |
 | Normalization denominator has `+ 1e-8` | VERIFIED at line 122 |
 | Router is `nn.Linear(d, n_experts, bias=False)` | VERIFIED at line 106 |
-| Default: 8 experts, top-2, rank 4 | VERIFIED — MoLFFN.__init__ signature at line 78 (rank default is 8 in the signature; "rank 4" in the deviations table refers to base LoRA rank, not the default argument — see stale pointer note below) |
+| Default: 8 experts, top-2, rank 8 | VERIFIED — MoLFFN.__init__ signature at line 78 |
 
 ### SingleLoRAFFN rank=72
 
@@ -110,49 +127,30 @@ Matches Q2 ablation intent. — VERIFIED
 
 ## Verification checklist — per-item results
 
-All checklist line numbers in the spec are stale (pre-component-split, reference old `model.py`
-line numbers). Correct current locations in `phase1/components/mol_ffn.py` are noted below.
+All checklist items verified against `phase1/components/mol_ffn.py`. Line numbers in spec are now current.
 
 | # | Claim | Spec ref | Actual location | Status |
 |---|-------|---------|----------------|--------|
-| 1 | `torch.sigmoid` not softmax | `model.py:279` | `mol_ffn.py:118` | VERIFIED — stale pointer |
-| 2 | Bias for selection only; gather from `scores` not `biased` | lines 280–282 | `mol_ffn.py:119–121` | VERIFIED — stale pointer |
-| 3 | Normalization over selected experts only | line 283 | `mol_ffn.py:122` | VERIFIED — stale pointer |
-| 4 | B matrix zero init | "line 220" | `mol_ffn.py:24` | VERIFIED — stale pointer |
-| 5 | One-hot gradient flow | "line 286" | `mol_ffn.py:125` | VERIFIED — stale pointer |
-| 6 | `expert_bias` is `register_buffer`; update inside `no_grad()` | "line 316" | `mol_ffn.py:109`, `mol_ffn.py:159` | VERIFIED — stale pointer |
-| 7 | Load balance sign rule matches paper | (no specific line) | `mol_ffn.py:165` | VERIFIED |
-| 8 | Composition order: gate/up before silu, down after | "line 299" | `mol_ffn.py:144–148` | VERIFIED — stale pointer |
-| 9 | `scale = 1.0 / rank` | "line 221" | `mol_ffn.py:25` | VERIFIED — stale pointer |
-| 10 | Shared adapters always active | lines 290–292, 302 | `mol_ffn.py:144–145, 155` | VERIFIED — stale pointer |
-| 11 | `model.get_mol_stats()` exists and returns `expert_balance` | "line 321" | `MoLFFN.get_load_stats()` at `mol_ffn.py:170` | INCORRECT method name; `expert_balance` field is present at line 179 |
-| 12 | Router `nn.Linear(d, n_experts, bias=False)` | "line 267" | `mol_ffn.py:106` | VERIFIED — stale pointer |
-
----
-
-## Issues requiring spec update
-
-**Issue 1 — Stale line numbers throughout checklist (documentation only)**
-All 12 checklist items reference `phase1/model.py` (pre-refactor). Code is now in
-`phase1/components/mol_ffn.py`. Correct line numbers given in table above. No correctness impact.
-
-**Issue 2 — Wrong method name in checklist item 11**
-Spec checklist item 11 says `model.get_mol_stats()`. Actual method is `MoLFFN.get_load_stats()`
-at `mol_ffn.py:170`. The return value `expert_balance` (line 179) is correct. Only the method
-name and line reference are wrong.
-Action: update item 11 to `MoLFFN.get_load_stats()` at `mol_ffn.py:170`.
-
-**Issue 3 — Rank description in deviations table**
-Deviations table row "Default: 8 experts, top-2, rank 4" — the "rank 4" is misleading since
-`MoLFFN.__init__` defaults `rank=8`. This appears to be a carryover from an earlier architecture.
-No correctness impact on implementation.
+| 1 | `torch.sigmoid` not softmax | `mol_ffn.py:118` | `mol_ffn.py:118` | VERIFIED |
+| 2 | Bias for selection only; gather from `scores` not `biased` | `mol_ffn.py:119–121` | `mol_ffn.py:119–121` | VERIFIED |
+| 3 | Normalization over selected experts only | `mol_ffn.py:122` | `mol_ffn.py:122` | VERIFIED |
+| 4 | B matrix zero init | `mol_ffn.py:24` | `mol_ffn.py:24` | VERIFIED |
+| 5 | One-hot gradient flow | `mol_ffn.py:125` | `mol_ffn.py:125` | VERIFIED |
+| 6 | `expert_bias` is `register_buffer`; update inside `no_grad()` | `mol_ffn.py:109`, `mol_ffn.py:159` | `mol_ffn.py:109`, `mol_ffn.py:159` | VERIFIED |
+| 7 | Load balance sign rule matches paper | `mol_ffn.py:165` | `mol_ffn.py:165` | VERIFIED |
+| 8 | Composition order: gate/up before silu, down after | `mol_ffn.py:144–148` | `mol_ffn.py:144–148` | VERIFIED |
+| 9 | `scale = 1.0 / rank` | `mol_ffn.py:25` | `mol_ffn.py:25` | VERIFIED |
+| 10 | Shared adapters always active | `mol_ffn.py:144–145, 155` | `mol_ffn.py:144–145, 155` | VERIFIED |
+| 11 | `MoLFFN.get_load_stats()` exists and returns `expert_balance` | `mol_ffn.py:170` | `mol_ffn.py:170`, `expert_balance` at line 179 | VERIFIED |
+| 12 | Router `nn.Linear(d, n_experts, bias=False)` | `mol_ffn.py:106` | `mol_ffn.py:106` | VERIFIED |
 
 ---
 
 ## Summary
 
 MoLFFN implementation is correct. All DeepSeek-V3 routing equations verified against paper and
-reference code. SingleLoRAFFN rank=72 is correct for the Q2 ablation. Three documentation issues
-remain: stale checklist line numbers (all items), stale method name in item 11
-(`get_mol_stats` → `get_load_stats`), and a stale rank description in the deviations table.
-None affect implementation correctness.
+reference code. SingleLoRAFFN rank=72 is correct for the Q2 ablation. All three documentation
+issues from the prior report have been resolved in `references/components/mol_ffn.md`:
+stale checklist line numbers (all items updated to mol_ffn.py), stale method name in item 11
+(`get_mol_stats` → `get_load_stats`), and stale rank description (rank 4 → rank 8).
+No implementation changes were required.

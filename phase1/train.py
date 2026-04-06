@@ -313,6 +313,20 @@ def train(config: str, d: int = 512, n_layers: int = 8, n_heads: int = 8,
     print(f"  Params: {n_params:,}")
     print(f"{'='*60}\n")
 
+    # Test evaluation — load best checkpoint and evaluate on held-out test set.
+    # Model selection uses val only; test_bpc is reported for transparency (Melis et al. 2018).
+    test_bpc = None
+    ckpt_path = os.path.join(ckpt_dir, f"{ckpt_prefix}_best.pt")
+    if os.path.exists(ckpt_path):
+        best_ckpt = torch.load(ckpt_path, map_location=device)
+        _unwrap(model).load_state_dict(best_ckpt["model_state"])
+        test_loader = get_dataloader("test", seq_len=seq_len, batch_size=batch_size)
+        test_loss = evaluate(model, test_loader, device, max_batches=200, amp_dtype=amp_dtype)
+        test_bpc = ce_to_bpc(test_loss)
+        print(f"  Test BPC (best ckpt): {test_bpc:.4f}")
+        with open(logger.log_path, "a") as _f:
+            _f.write(json.dumps({"step": total_steps - 1, "test_bpc": test_bpc, "type": "test"}) + "\n")
+
     summary = {
         "config": config, "n_params": n_params,
         "total_steps": total_steps, "final_val_bpc": val_bpc,
@@ -322,11 +336,16 @@ def train(config: str, d: int = 512, n_layers: int = 8, n_heads: int = 8,
         "tokenizer": tokenizer, "dataset": dataset, "vocab_size": vocab_size,
         "seed": seed,
     }
+    if test_bpc is not None:
+        summary["test_bpc"] = test_bpc
     with open(os.path.join(ckpt_dir, f"{ckpt_prefix}_summary.json"), "w") as f:
         json.dump(summary, f, indent=2)
 
     if lit is not None:
-        lit.log_metrics({"final/best_val_bpc": best_val_bpc, "final/val_bpc": val_bpc})
+        metrics = {"final/best_val_bpc": best_val_bpc, "final/val_bpc": val_bpc}
+        if test_bpc is not None:
+            metrics["final/test_bpc"] = test_bpc
+        lit.log_metrics(metrics)
         lit.finalize()
 
     return best_val_bpc

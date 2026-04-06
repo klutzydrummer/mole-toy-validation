@@ -124,7 +124,7 @@ class SqrtBoundDerivative(torch.autograd.Function):
 
 **Parallel scan helper:** `phase2/components/causal_recurrence.py:16` — `_parallel_scan`
 
-**Usage in Zone E:** `phase2/components/zone_e.py:31` — `nn.ModuleList([CausalRecurrenceLayer(d_inner, log_a_init=3.0) for _ in range(3)])` (CRLEncoder); `phase2/components/zone_e.py:58` (CRLEncoderFull)
+**Usage in Zone E:** `phase2/components/zone_e.py:30–31` — `nn.ModuleList([CausalRecurrenceLayer(d_inner, log_a_init=3.0) for _ in range(3)])` (CRLEncoder); `phase2/components/zone_e.py:57–58` (CRLEncoderFull)
 
 **Usage in Zone D:** `phase2/components/zone_d.py:12` — imports `_parallel_scan` directly; no `CausalRecurrenceLayer` in Zone D
 
@@ -139,7 +139,7 @@ class SqrtBoundDerivative(torch.autograd.Function):
    ```
    This is mathematically equivalent for h0=0 and reduces to ~6 tensor ops per instance,
    making it compilable by `torch.compile` into a single fused kernel graph. The derivation
-   is in the docstring at `phase2/components/causal_recurrence.py:19–48`.
+   is in the docstring at `phase2/components/causal_recurrence.py:20–48`.
 
 2. **log_a parameterization instead of softplus(a_param), with role-specific init.**
    The reference stores `a_param` and computes decay as `exp(-8 * gate_a * softplus(a_param))`,
@@ -154,7 +154,7 @@ class SqrtBoundDerivative(torch.autograd.Function):
    unigram prediction (~9.7 BPC). This failure burned three 50k-step Phase 2 runs.
 
    Current init values:
-   - Zone E: `log_a_init=3.0` → a_base≈0.953, half-life≈4 steps, gradient≈0.047 (`phase2/components/zone_e.py:32`)
+   - Zone E: `log_a_init=3.0` → a_base≈0.953, half-life≈4 steps, gradient≈0.047 (`phase2/components/zone_e.py:31`)
    - Zone D: `log_a_init=0.0` → a_base=0.500, half-life<1 step,  gradient=0.250 (not used via CausalRecurrenceLayer; Zone D uses `_parallel_scan` directly)
 
    The softplus parameterization (gradient = sigmoid(a_param) ≈ 0.5–1.0 regardless of
@@ -164,12 +164,12 @@ class SqrtBoundDerivative(torch.autograd.Function):
 3. **float32 promotion for sigmoid(log_a) only.** The reference promotes all accumulation
    to float32 inside `rnn_scan`. We promote only the `sigmoid(log_a)` computation to float32
    before casting back to working dtype (`phase2/components/causal_recurrence.py:111`). The parallel scan itself
-   runs fully in float32 inside `_parallel_scan` (`phase2/components/causal_recurrence.py:41–48`). The net effect
+   runs fully in float32 inside `_parallel_scan` (`phase2/components/causal_recurrence.py:41–42`). The net effect
    is the same: no float16 saturation in the decay path.
 
 4. **sqrt clamped to 1e-6 instead of custom autograd function.** The reference uses
    `SqrtBoundDerivative` to clip the sqrt gradient at 1000.0. We instead clamp the
-   argument before sqrt: `(1.0 - a_t * a_t).clamp(min=1e-6)` (`phase2/model.py:145`).
+   argument before sqrt: `(1.0 - a_t * a_t).clamp(min=1e-6)` (`phase2/components/causal_recurrence.py:117`).
    This prevents the zero-argument NaN without a custom backward, which is simpler under
    `torch.compile`. The tradeoff is that we do not replicate the exact gradient magnitude
    cap of 1000.0; under normal operation with `a_t < 1`, the argument is bounded away from
@@ -178,7 +178,7 @@ class SqrtBoundDerivative(torch.autograd.Function):
 5. **Causal depthwise conv (kernel=4) prepended.** The reference RG-LRU does not include
    a convolution; Griffin's recurrent block wraps the RG-LRU in a temporal conv separately.
    Our `CausalRecurrenceLayer` folds the width-4 causal depthwise conv into the layer
-   (`phase2/model.py:102–127`). Gates are computed from the post-conv activations, not raw
+   (`phase2/components/causal_recurrence.py:96–101`). Gates are computed from the post-conv activations, not raw
    x. This matches Griffin's recurrent block structure but makes CausalRecurrenceLayer
    self-contained.
 
@@ -188,46 +188,47 @@ class SqrtBoundDerivative(torch.autograd.Function):
    the toy validation setting (single-document enwik8 slices).
 
 7. **Output projection + RMSNorm.** The reference outputs `y = h_t` directly. Our layer
-   appends `out_proj` (Linear d→d, no bias) and `RMSNorm` (`phase2/model.py:115–116,
-   149`). This is an additional stabilization step not present in the Griffin RG-LRU.
+   appends `out_proj` (Linear d→d, no bias) and `RMSNorm` (`phase2/components/causal_recurrence.py:89–90,
+   121`). This is an additional stabilization step not present in the Griffin RG-LRU.
 
 ---
 
 ## Verification checklist
 
 1. **Gate computation:** Confirm `r_t = sigmoid(W_r(x_conv))` and `i_t = sigmoid(W_i(x_conv))`
-   both produce values in (0, 1). Check `phase2/model.py:130–131`.
+   both produce values in (0, 1). Check `phase2/components/causal_recurrence.py:104–105`.
 
 2. **Recurrent coefficient:** Confirm `a_t = sigmoid(log_a)^(8 * r_t)` produces values
-   strictly in (0, 1). Zone E init: `sigmoid(3.0)^8 ≈ 0.68`. Zone D init: `sigmoid(0.0)^8
-   = 0.004`. Both are in (0, 1). Confirm `log_a_init=3.0` in ZoneE.recurrence and
-   `log_a_init=0.0` in ZoneD.recurrence (phase2/model.py lines ~281, ~398).
+   strictly in (0, 1). Zone E init: `sigmoid(3.0)^8 ≈ 0.68`. Zone D: uses `_parallel_scan`
+   directly, no CausalRecurrenceLayer. Confirm `log_a_init=3.0` in CRLEncoder and
+   CRLEncoderFull (`phase2/components/zone_e.py:31, 58`).
 
 3. **Float32 promotion for sigmoid(log_a):** The float16 max less than 1.0 is 0.99951
    (exponent=-1, mantissa=1023: value = (1 + 1023/1024) * 0.5 = 2047/2048). sigmoid(7.5)
    = 0.99944 rounds to 0.99951 in float16 — NOT to 1.0. However, the code correctly
    computes in float32 regardless, which is the right practice. Confirm
-   `torch.sigmoid(self.log_a.float()).to(x.dtype)` at `phase2/model.py:139`.
+   `torch.sigmoid(self.log_a.float()).to(x.dtype)` at `phase2/components/causal_recurrence.py:111`.
 
 4. **Norm-preserving input term:** Confirm `b_t = sqrt((1 − a_t²).clamp(min=1e-6)) * (i_t * x_conv)`
-   at `phase2/model.py:145`. The clamp prevents NaN; the sqrt term is Eq. (4)'s
+   at `phase2/components/causal_recurrence.py:117`. The clamp prevents NaN; the sqrt term is Eq. (4)'s
    `√(1 − a_t²)` coefficient.
 
 5. **Parallel scan correctness:** Verify `_parallel_scan(a_t, b_t)` with a known sequence.
-   For L=2, h0=0: `h_1 = b_1`, `h_2 = a_2 * b_1 + b_2`. Confirm `phase2/model.py:71–76`.
+   For L=2, h0=0: `h_1 = b_1`, `h_2 = a_2 * b_1 + b_2`. Confirm `phase2/components/causal_recurrence.py:43–48`.
 
 6. **Float32 inside parallel scan:** Confirm `a = a_t.float()` and `b = b_t.float()` at
-   `phase2/model.py:69–70`. Result cast back with `.to(a_t.dtype)` at line 76.
+   `phase2/components/causal_recurrence.py:41–42`. Result cast back with `.to(a_t.dtype)` at line 48.
 
-7. **log_A clamping:** Confirm `cumsum(log(a)).clamp(min=-80.0)` at `phase2/model.py:71`.
+7. **log_A clamping:** Confirm `cumsum(log(a)).clamp(min=-80.0)` at `phase2/components/causal_recurrence.py:43`.
    Without the clamp, float32 can underflow to zero for long sequences with small a_t.
 
-8. **Zone E 3-layer stack:** Confirm `ZoneE.recurrence` is `ModuleList` of 3
-   `CausalRecurrenceLayer(d_outer)` at `phase2/model.py:281`. Each layer operates at
-   `d_outer = d // 4` (default `d=256`, `d_outer=64`).
+8. **Zone E 3-layer stack:** Confirm `CRLEncoder.recurrence` is `ModuleList` of 3
+   `CausalRecurrenceLayer(d_inner, log_a_init=3.0)` at `phase2/components/zone_e.py:30–31`.
+   Each layer operates at `d_inner = d // 4`.
 
-9. **Zone D 3-layer stack:** Same as Zone E — confirm `ZoneD.recurrence` at
-   `phase2/model.py:398`.
+9. **Zone D uses _parallel_scan directly:** Confirm Zone D (`phase2/components/zone_d.py`)
+   imports and uses `_parallel_scan` from `causal_recurrence.py` (line 12) rather than
+   instantiating `CausalRecurrenceLayer`. Zone D has no ModuleList of recurrence layers.
 
 10. **h_state dtype:** Confirm that hidden state accumulation inside `_parallel_scan` is
     in float32 and that the return is cast back to input dtype. Check that no float16 values

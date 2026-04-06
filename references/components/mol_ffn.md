@@ -4,7 +4,7 @@
 
 **Name:** MoL FFN — Mixture-of-LoRAs Feed-Forward Network
 
-**Description:** A sparse-expert FFN where each "expert" is a rank-4 LoRA adapter over
+**Description:** A sparse-expert FFN where each "expert" is a rank-8 LoRA adapter over
 shared base weights, routed using DeepSeek-V3 sigmoid-based gating with unbiased weight
 composition and auxiliary-loss-free load balancing.
 
@@ -259,32 +259,32 @@ used 0.001 — scaled up for toy experiments (noted in source comment at line 11
 | No node/group-limited routing | Single-machine toy model; group routing is a distributed training optimization |
 | Normalization denominator has `+ 1e-8` epsilon | Numerical stability guard; absent in reference but safe addition |
 | Router is `nn.Linear(d, n_experts, bias=False)` | No router bias; router bias is a separate `expert_bias` buffer |
-| Default: 8 experts, top-2, rank 4 | Per architecture spec; DeepSeek-V3 uses 256 routed experts, top-8 |
+| Default: 8 experts, top-2, rank 8 | Per architecture spec; DeepSeek-V3 uses 256 routed experts, top-8 |
 
 ---
 
 ## Verification checklist
 
-1. **Sigmoid not softmax**: Confirm `torch.sigmoid(logits)` is used at `model.py:279`, not `F.softmax`.
+1. **Sigmoid not softmax**: Confirm `torch.sigmoid(logits)` is used at `mol_ffn.py:118`, not `F.softmax`.
 
-2. **Bias for selection only**: Confirm `biased = scores + self.expert_bias` at line 280 is used only for `topk()` at line 281, and that `scores.gather(2, topk_idx)` at line 282 gathers from the original `scores` tensor, not `biased`.
+2. **Bias for selection only**: Confirm `biased = scores + self.expert_bias` at `mol_ffn.py:119` is used only for `topk()` at line 120, and that `scores.gather(2, topk_idx)` at line 121 gathers from the original `scores` tensor, not `biased`.
 
-3. **Normalization over selected experts**: Confirm `topk_scores.sum(dim=-1, keepdim=True)` at line 283 sums only the top-k scores, not all N_r scores.
+3. **Normalization over selected experts**: Confirm `topk_scores.sum(dim=-1, keepdim=True)` at `mol_ffn.py:122` sums only the top-k scores, not all N_r scores.
 
-4. **B matrix zero init**: Confirm `LoRAAdapter.__init__` initializes `self.B = nn.Parameter(torch.zeros(rank, d_out))` at line 220. At initialization, every LoRA adapter must be a no-op (output = 0).
+4. **B matrix zero init**: Confirm `LoRAAdapter.__init__` initializes `self.B = nn.Parameter(torch.zeros(rank, d_out))` at `mol_ffn.py:24`. At initialization, every LoRA adapter must be a no-op (output = 0).
 
-5. **One-hot gradient flow**: Confirm `F.one_hot(topk_idx, ...)` at line 286 is used so that gradients flow through `topk_weights` (the soft weights), not through the discrete index selection.
+5. **One-hot gradient flow**: Confirm `F.one_hot(topk_idx, ...)` at `mol_ffn.py:125` is used so that gradients flow through `topk_weights` (the soft weights), not through the discrete index selection.
 
-6. **Bias not gradient-trained**: Confirm `self.expert_bias` is a `register_buffer` (not `nn.Parameter`) and that the update at line 316 runs inside `torch.no_grad()`.
+6. **Bias not gradient-trained**: Confirm `self.expert_bias` is a `register_buffer` (not `nn.Parameter`) at `mol_ffn.py:109`, and that the update at `mol_ffn.py:159` runs inside `torch.no_grad()`.
 
 7. **Load balance sign rule matches paper**: Confirm the bias update is `bias += bias_step * (avg - counts).sign()`, which increases bias for underloaded experts and decreases it for overloaded ones — matching the paper's stated rule.
 
-8. **Composition order**: Confirm LoRA corrections for gate and up projections are accumulated before `F.silu()` is applied (line 299), not after. Down projection corrections are applied after.
+8. **Composition order**: Confirm LoRA corrections for gate and up projections are accumulated before `F.silu()` is applied at `mol_ffn.py:144–148`, not after. Down projection corrections are applied after.
 
-9. **Scale factor**: Confirm `LoRAAdapter.scale = 1.0 / rank` at line 221. With rank=4, scale=0.25.
+9. **Scale factor**: Confirm `LoRAAdapter.scale = 1.0 / rank` at `mol_ffn.py:25`. With rank=8, scale=0.125.
 
-10. **Shared adapter always active**: Confirm `self.shared_gate(x)`, `self.shared_up(x)`, `self.shared_down(hidden)` are added unconditionally (lines 290–292, 302) regardless of routing outcome.
+10. **Shared adapter always active**: Confirm `self.shared_gate(x)`, `self.shared_up(x)`, `self.shared_down(hidden)` are added unconditionally at `mol_ffn.py:144–145, 155` regardless of routing outcome.
 
-11. **Expert weight zero-sum check**: After training for at least 100 steps, run `model.get_mol_stats()` (line 321) and verify `expert_balance` > 0.7 (entropy ratio), confirming load balancing is functioning.
+11. **Expert weight zero-sum check**: After training for at least 100 steps, run `MoLFFN.get_load_stats()` at `mol_ffn.py:170` and verify `expert_balance` > 0.7 (entropy ratio), confirming load balancing is functioning.
 
-12. **No bias in router linear**: Confirm `self.router = nn.Linear(d, n_experts, bias=False)` at line 267. Router bias is handled separately via `expert_bias` buffer, not baked into the linear layer.
+12. **No bias in router linear**: Confirm `self.router = nn.Linear(d, n_experts, bias=False)` at `mol_ffn.py:106`. Router bias is handled separately via `expert_bias` buffer, not baked into the linear layer.

@@ -298,26 +298,26 @@ Achieves best downstream accuracy and lowest gradient norms among all HC variant
 
 5. **Stream divergence:** Verify that after several training steps with n_streams=2, the two
    stream vectors are no longer identical. Without H_post broadcasting different weights,
-   streams cannot diverge (see model.py comment at lines 109–112).
+   streams cannot diverge (see phase1/model.py comment at line 123).
 
 6. **mHC forward shapes:** Confirm `_forward_mhc` receives `[B, L, n, d]` and returns
    `[B, L, n, d]`; confirm `HyperConnection.forward` receives `[B, L, n, d]` and returns
    `[B, L, n, d]`.
 
-7. **Stream expansion:** Confirm the `.clone()` at line 798 is present — without it, the
+7. **Stream expansion:** Confirm the `.clone()` at `phase1/model.py:124` is present — without it, the
    expand creates a view and all streams share memory, which would break the divergence
    mechanism.
 
 8. **Stream collapse weights:** Confirm `stream_collapse_logits` is initialized to zeros and
    that `softmax` is applied (not raw logits) before the einsum.
 
-9. **Pre-norm inside branch_fn:** Confirm the lambda at lines 702–703 applies `norm1`/`norm2`
+9. **Pre-norm inside branch_fn:** Confirm the lambda at `phase1/components/transformer_block.py:79–80` applies `norm1`/`norm2`
    inside the branch callable, so that the normalized input goes to the sublayer while the
    un-normalized stream participates in H_res mixing. This matches the paper's structure where
    F() operates on the pre-processed branch input, not the raw stream.
 
 10. **KromHC replaces Sinkhorn — NOT APPLICABLE:** Deviation 3 documents that `sinkhorn_log`
     was fully replaced by `KromHCResidual` (Kronecker product factorization of H_res into two
-    2×2 doubly-stochastic factors). Confirm `KromHCResidual` is present at `phase1/model.py:353`
+    2×2 doubly-stochastic factors). Confirm `KromHCResidual` is present at `phase1/components/mhc.py:31`
     and that no call to `sinkhorn_log` exists in the file. The τ=0.05 / n_iters=10 check
     against the reference code is superseded by this architectural change.
