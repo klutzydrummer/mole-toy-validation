@@ -1,0 +1,5 @@
+# Reference papers and verbatim source implementations.
+# These are large and only needed during explicit verification runs
+# (triggered by "run full verification" → .claude/rules/run-full-verification.md).
+# Claude will still read them when explicitly asked.
+references/sources/

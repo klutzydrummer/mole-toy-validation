@@ -138,37 +138,7 @@ Dataset: WikiText-103-raw, BPE tokenizer (vocab=4096, sentencepiece), seq_len=25
 
 ## Phase 1 Results
 
-### Original runs (100k steps, no seed suffix)
-
-| Config | Best val BPC | Notes |
-|--------|-------------|-------|
-| compose | 3.5316 | Best overall — but mHC optimization issue unresolved |
-| mol | 3.5702 | Inner network for all Phase 2 configs |
-| mhc | 3.5736 | Rising grad norm (0.54→0.70); diagnose before composing |
-| baseline | 3.5875 | Reference |
-
-### Seed42 reruns + new attention configs — ALL COMPLETE (as of 2026-04-04)
-
-Best val BPC (best checkpoint, not final step):
-
-| Config | Best val BPC | Notes |
-|--------|-------------|-------|
-| diff_attn_seed42 | **3.5131** | Best overall — Diff Attn V2 noise cancellation |
-| baseline_wide_seed42 | 3.5355 | Beats mol — Q1: capacity alone outweighs routing |
-| compose_seed42 | 3.5416 | grad_norm rising; mHC issue unresolved |
-| mhc_seed42 | 3.5428 | grad_norm rising (0.80→1.37); issue unresolved |
-| mol_seed42 | 3.5441 | Inner network for all Phase 2 configs |
-| diff_mla_seed42 | 3.5474 | 1 loss spike; MLA compression still costly even with Diff Attn |
-| mol_single_seed42 | 3.5516 | Q2: routing beats single-LoRA by 0.0075 BPC |
-| baseline_seed42 | 3.5605 | Reference |
-| mla_seed42 | 3.5859 | KV compression hurts at this scale (d=512) |
-
-**Phase 1 ablation findings:**
-- **Q1 (capacity vs routing):** `baseline_wide` (3.5355) beats `mol` (3.5441) — FFN width alone outperforms MoL routing by 0.009 BPC. Capacity dominates at this scale.
-- **Q2 (routing value):** `mol` (3.5441) beats `mol_single` (3.5516) — routing helps by 0.0075 BPC over capacity-matched single LoRA.
-- **Q3 (MLA compression):** `mla` (3.5859) is the worst non-baseline result — KV bottleneck rank (d_c=128) is too lossy at d=512.
-- **Q4 (Diff Attn):** `diff_attn` (3.5131) is the best Phase 1 result — beats baseline by 0.047 BPC, beats mol by 0.031 BPC.
-- **Q5 (DiffMLA composition):** `diff_mla` (3.5474) partially recovers MLA's deficit but does not approach `diff_attn` — KV compression remains the limiting factor regardless of attention mechanism.
+See `checkpoints/report.md` (regenerate: `python utils/reporter.py`) and memory for full tables and ablation findings.
 
 Do not compose mHC+MoL+HDC until mHC's grad norm issue is diagnosed. The rising grad norm is continuous — observed 0.80→1.37 over 100k steps with no stabilization. Diagnostic: `python phase1/train.py --config mhc --max_lr 1.5e-4 --total_steps 25000`.
 
@@ -205,3 +175,17 @@ Phase 2 training: 50k steps, alpha=0.03 (H-Net ratio loss), alpha warmup over fi
 **Per-eval metrics logged:** `boundary_bpc`, `midchunk_bpc`, `residual_proj_norm`
 
 Note: `boundary_bpc > midchunk_bpc` is geometrically expected (fresh concept token has less smoothed context). Diagnostic value is in the trend over training and cross-config comparison, not the absolute sign.
+
+---
+
+## Compact instructions
+
+When compacting, preserve:
+- Current phase, active task, and any open decisions
+- Verification status of any component under discussion; any FAIL verdicts
+- The mHC grad-norm diagnostic warning (do not compose until diagnosed)
+- Any in-progress code changes not yet committed
+
+Discard:
+- Raw grep/search output and full file reads of unchanged reference material
+- Completed task history with no bearing on current work

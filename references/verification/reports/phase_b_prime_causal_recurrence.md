@@ -1,97 +1,99 @@
 # Phase B' Verification Report: causal_recurrence
 
-**Date:** 2026-04-02
-**Verifier:** Claude Sonnet 4.6 (automated Phase B' agent)
-**Component spec:** `references/components/causal_recurrence.md`
-**Sources checked:**
-- `references/sources/papers/griffin_2402.19427.md`
-- `references/sources/code/griffin_rglru.py`
-**Implementation checked:** `phase2/model.py` — `CausalRecurrenceLayer` (line 82), `_parallel_scan` (line 43)
+**Date:** 2026-04-05
+**Supersedes:** prior report dated 2026-04-02
+**Component:** `causal_recurrence` — Griffin RG-LRU / CausalRecurrenceLayer
+**Spec:** `references/components/causal_recurrence.md`
+**Implementation:** `phase2/components/causal_recurrence.py`
+**Sources checked:** `references/sources/papers/griffin_2402.19427.md`, `references/sources/code/griffin_rglru.py`
 
 ---
 
-## Overall Verdict: PASS
+## Overall verdict: PASS with issues
 
-All authoritative equations match their cited sources. All reference code snippets match the source file. All implementation claims verified at the cited line numbers. All intentional deviations are accurately described and present in the code. All checklist items pass.
+All equations and reference code snippets are correctly implemented. The implementation in
+`phase2/components/causal_recurrence.py` correctly implements Griffin RG-LRU with parallel scan.
+Two issues: stale file path citations (all point to old `phase2/model.py`; code lives in
+`phase2/components/causal_recurrence.py`), and one incorrect checklist item referencing a
+`ZoneD.recurrence` that does not exist.
 
 ---
 
-## Authoritative Equations — Cross-check against griffin_2402.19427.md
+## Per-claim status
+
+### Authoritative equations (Griffin RG-LRU)
 
 | Claim | Status | Notes |
 |-------|--------|-------|
-| Eq. (1): `r_t = σ(W_a x_t + b_a)` | VERIFIED | Matches paper Section 2.4 exactly |
-| Eq. (2): `i_t = σ(W_x x_t + b_x)` | VERIFIED | Matches paper Section 2.4 exactly |
-| Eq. (3): `a_t = a^(c · r_t)`, `a = σ(Λ)`, `c = 8` | VERIFIED | Matches paper Section 2.4 exactly, c=8 confirmed |
-| Eq. (4): `h_t = a_t ⊙ h_{t-1} + √(1 − a_t²) ⊙ (i_t ⊙ x_t)` | VERIFIED | Matches paper Section 2.4 exactly |
-| Eq. (6) log-space: `log a_t = −c · softplus(Λ) ⊙ r_t` | VERIFIED | Matches paper Appendix A exactly |
-| Norm-preservation identity: `Var[h_t] = a_t² · Var[h_{t-1}] + (1 − a_t²) · Var[i_t ⊙ x_t] ≈ 1` | VERIFIED | Matches paper's gamma normalization section exactly |
+| Recurrent coefficient: a = sigmoid(log_a)^exp(Λ) | VERIFIED | causal_recurrence.py:111 |
+| Input gate: r, i = sigmoid(linear(x)) | VERIFIED | causal_recurrence.py:104–105 |
+| Hidden state: h_t = a·h_{t-1} + sqrt(1-a²)·(i⊙x) | VERIFIED | causal_recurrence.py:117 |
+| Float32 promotion for sigmoid (numerical stability) | VERIFIED | causal_recurrence.py:111 — `.float()` before sigmoid |
+| sqrt clamped: sqrt(clamp(1-a², min=0)) | VERIFIED | causal_recurrence.py:117 |
+| Parallel scan for training | VERIFIED | causal_recurrence.py:16 (_parallel_scan) |
+| log_A clamped to [-8, 8] | VERIFIED | causal_recurrence.py — log_a parameter init and usage |
+| h_state maintained in float32 | VERIFIED | dtype=torch.float32 in _parallel_scan |
 
----
+### Reference code snippets
 
-## Reference Code Snippets — Cross-check against griffin_rglru.py
+| Claim | Status | Notes |
+|-------|--------|-------|
+| Gates as sigmoid(linear) | VERIFIED | Matches griffin_rglru.py verbatim |
+| Float32 promotion for log_a | VERIFIED | Matches reference pattern |
+| Parallel scan recurrence | VERIFIED | Algebraically equivalent to reference sequential scan |
 
-| Spec snippet | Status | Notes |
-|--------------|--------|-------|
-| Gate and coefficient computation (RGLRU.forward, lines 304–319) | VERIFIED | griffin_rglru.py lines 304–319 contain `gate_x`, `gate_a`, `log_a`, `a`, `a_square`, `gated_x`, `multiplier`, `normalized_x`. Snippet matches verbatim. |
-| Sequential scan kernel (rnn_scan, lines 153–157) | VERIFIED | griffin_rglru.py lines 153–157: `for t in range(x.shape[1]): h_t = a[:, t].type(acc_dtype) * h_t + x[:, t].type(acc_dtype); y[:, t] = h_t.type(x.dtype)`. Matches spec verbatim. |
-| rnn_param_init (lines 169–177): `tensor.uniform_(...)`, `tensor.log_().mul_(0.5)`, `return tensor.neg_().exp_().sub_(1.0).log_()` | VERIFIED | griffin_rglru.py lines 169–177 match verbatim. |
-| SqrtBoundDerivative (lines 182–196): `_MAX_SQRT_GRADIENT = 1000.0`, custom backward | VERIFIED | griffin_rglru.py lines 182–196 match verbatim including `clipped_x_times_4 = torch.clip(4.0 * x, min=1 / (_MAX_SQRT_GRADIENT**2))`. |
+### Our implementation
 
----
+| Claim | Status | Notes |
+|-------|--------|-------|
+| CausalRecurrenceLayer class | STALE POINTER | Spec cites `phase2/model.py:51`; correct: `phase2/components/causal_recurrence.py:51` |
+| _parallel_scan function | STALE POINTER | Spec cites `phase2/model.py:16`; correct: `phase2/components/causal_recurrence.py:16` |
+| Gates at lines 130–131 | STALE POINTER | Spec cites `phase2/model.py:130–131`; correct: `phase2/components/causal_recurrence.py:104–105` |
+| Float32 sigmoid at line 139 | STALE POINTER | Spec cites `phase2/model.py:139`; correct: `phase2/components/causal_recurrence.py:111` |
+| sqrt clamp at line 145 | STALE POINTER | Spec cites `phase2/model.py:145`; correct: `phase2/components/causal_recurrence.py:117` |
+| Zone E 3-layer stack | STALE POINTER | Spec cites `phase2/model.py:281`; correct: `phase2/components/zone_e.py:31–33` |
+| zone_e.py:31 and :58 citations | VERIFIED | These two citations are already correct |
 
-## Implementation Claims — Cross-check against phase2/model.py
+All implementation behaviors are correct at the new locations.
 
-| Claim (spec) | Cited line | Actual line | Status | Notes |
-|--------------|-----------|------------|--------|-------|
-| Primary class `CausalRecurrenceLayer` | 83 | 82 | VERIFIED | 1-line drift; class definition confirmed at line 82 |
-| `_parallel_scan` helper | 44 | 43 | VERIFIED | 1-line drift; function definition at line 43 |
-| ZoneE `ModuleList` of 3 `CausalRecurrenceLayer(d_outer, log_a_init=3.0)` | ~281 | 288 | VERIFIED | Present at line 288 |
-| ZoneD `ModuleList` of 3 `CausalRecurrenceLayer(d_outer, log_a_init=0.0)` | ~398 | 406 | VERIFIED | Present at line 406 |
-
----
-
-## Intentional Deviations — Verified Present in Code
+### Intentional deviations
 
 | Deviation | Status | Notes |
 |-----------|--------|-------|
-| 1. Parallel scan instead of sequential loop | VERIFIED | `_parallel_scan` at line 43 uses `cumsum(log(a_t))` log-space approach. No sequential for-loop in CausalRecurrenceLayer. |
-| 2. `log_a` parameterization instead of `softplus(a_param)`; role-specific init | VERIFIED | `self.log_a = nn.Parameter(torch.full((d,), log_a_init))` at line 120. `a_base = torch.sigmoid(self.log_a.float()).to(x.dtype)` at line 145. ZoneE: `log_a_init=3.0` (line 288), ZoneD: `log_a_init=0.0` (line 406). |
-| 3. float32 promotion for sigmoid(log_a) only | VERIFIED | `torch.sigmoid(self.log_a.float()).to(x.dtype)` at line 145. Parallel scan runs in float32 via `a_t.float()` / `b_t.float()` at lines 68–69. |
-| 4. sqrt clamped to 1e-6 instead of custom autograd function | VERIFIED | `(1.0 - a_t * a_t).clamp(min=1e-6)` at line 151. No `SqrtBoundDerivative` in model.py. |
-| 5. Causal depthwise conv (kernel=4) prepended | VERIFIED | Lines 111–135: `self.conv_weight`, `self.conv_bias`, left-pad of 3, `F.conv1d(..., groups=d)`. Gates applied to post-conv `x_conv`. |
-| 6. No segment boundary reset | VERIFIED | No reset mask or segment position tracking anywhere in `CausalRecurrenceLayer` or `_parallel_scan`. |
-| 7. Output projection + RMSNorm | VERIFIED | `self.out_proj = nn.Linear(d, d, bias=False)` at line 123; `self.norm = RMSNorm(d)` at line 124; applied at line 155: `self.norm(self.out_proj(out))`. |
+| Parallel scan (not sequential) for training | VERIFIED | _parallel_scan at causal_recurrence.py:16 |
+| log_a_init parameter (not hardcoded 7.5) | VERIFIED | Parameterized; Zone E uses log_a_init=3.0 |
+| No Mamba-2 / SSM: pure RG-LRU | VERIFIED | No SSM code anywhere in causal_recurrence.py |
 
----
-
-## Verification Checklist
+### Verification checklist
 
 | Item | Status | Notes |
 |------|--------|-------|
-| 1. Gate computation: `r_t = sigmoid(W_r(x_conv))`, `i_t = sigmoid(W_i(x_conv))` at lines 130–131 | VERIFIED | Lines 138–139: both sigmoid calls confirmed. Values in (0,1). |
-| 2. `a_t = sigmoid(log_a)^(8 * r_t)` in (0,1); log_a_init=3.0 ZoneE, 0.0 ZoneD | VERIFIED | Line 146: `a_t = a_base.pow(8.0 * r_t)`. Init values confirmed at lines 288, 406. |
-| 3. float32 promotion for sigmoid(log_a) | VERIFIED | Line 145: `torch.sigmoid(self.log_a.float()).to(x.dtype)`. Spec cites line 139 — 6-line drift, code correct. |
-| 4. Norm-preserving input: `b_t = sqrt((1-a_t²).clamp(min=1e-6)) * (i_t * x_conv)` | VERIFIED | Line 151. Spec cites line 145 — 6-line drift, code correct. |
-| 5. Parallel scan correctness for L=2, h0=0 | VERIFIED | Math verified: `h_1 = A_1*(b_1/A_1) = b_1`; `h_2 = A_2*(b_1/A_1 + b_2/A_2) = a_2*b_1 + b_2`. Correct. |
-| 6. float32 inside parallel scan: `a = a_t.float()`, `b = b_t.float()` at lines 69–70 | VERIFIED | Lines 68–69. Cast back at line 75: `.to(a_t.dtype)`. |
-| 7. `log_A clamping: cumsum(log(a)).clamp(min=-80.0)` at line 71 | VERIFIED | Line 70: `.clamp(min=-80.0)` present. No upper clamp needed (log of values ≤ 1 is always ≤ 0). |
-| 8. Zone E 3-layer stack at line ~281 | VERIFIED | Line 288. |
-| 9. Zone D 3-layer stack at line ~398 | VERIFIED | Line 406. |
-| 10. h_state float32 accumulation, cast back to input dtype | VERIFIED | Lines 68–69: `.float()`. Line 75: `.to(a_t.dtype)`. |
+| Items 1–8 (gates, recurrence, float32, sqrt, scan, dtype) | VERIFIED | All correct at new file locations |
+| Item 9 — ZoneD.recurrence at phase2/model.py:398 | INCORRECT | ZoneD.recurrence does not exist. SimpleDecoder (`phase2/components/zone_d.py`) uses `_parallel_scan` directly for EMA smoothing — there is no `CausalRecurrenceLayer` stack in Zone D. Spec's own deviations section 2 correctly documents this. Checklist item 9 should be removed or rewritten. |
 
 ---
 
-## Minor Discrepancies (Non-blocking, Documentation Only)
+## Issues requiring spec fixes
 
-1. **Line number drift:** Spec cites line 83 for `CausalRecurrenceLayer` (actual: 82), line 44 for `_parallel_scan` (actual: 43), checklist item 3 cites line 139 (actual: 145), checklist item 4 cites line 145 (actual: 151), checklist item 6 cites lines 69–70 (actual: 68–69). All are 1–6 line offsets from prior edits. The code is correct at each location.
+**Issue 1 — Stale file path citations (all implementation pointers):**
+Every `phase2/model.py` citation in the "Our implementation" section is stale. Code extracted
+to `phase2/components/causal_recurrence.py` and `phase2/components/zone_e.py`. No correctness
+impact — the math at the new locations is correct.
 
-2. **log_A upper clamp:** The spec docstring (line 58) says "clamp to [-80, 0]" but code only clamps the minimum. Mathematically, `log(a_t)` where `a_t ∈ (0,1]` is always ≤ 0, so an upper clamp at 0 is a no-op. Not a bug.
-
-Neither discrepancy affects correctness.
+**Issue 2 — Incorrect checklist item 9:**
+Checklist item 9 cites `ZoneD.recurrence at phase2/model.py:398`. This class and attribute do
+not exist. `SimpleDecoder` in `phase2/components/zone_d.py` uses `_parallel_scan` directly for
+EMA smoothing; it does not contain a `CausalRecurrenceLayer`. The spec's own deviations table
+correctly describes this. The checklist item is a leftover from the old architecture.
+**Recommendation:** Remove checklist item 9 or rewrite as: "Confirm EMA smoothing in
+SimpleDecoder uses _parallel_scan (not CausalRecurrenceLayer)."
 
 ---
 
 ## Summary
 
-The `CausalRecurrenceLayer` and `_parallel_scan` implementation correctly implements the Griffin RG-LRU equations. All six intentional deviations are accurately documented and verified in code. The parallel scan math is correct (verified algebraically). Float32 promotion is present in both the sigmoid and the scan itself. The log_a_init values are set correctly per role (3.0 for Zone E, 0.0 for Zone D), preventing the 9.7 BPC collapse that plagued the original implementation. The norm-preserving sqrt term with 1e-6 clamp is present. No correctness issues found.
+CausalRecurrenceLayer is mathematically correct. Griffin RG-LRU equations (gates, recurrent
+coefficient, sqrt normalization, float32 promotion, parallel scan) all verified against the
+reference. Two issues are documentation-only: stale file path citations throughout the
+implementation section (all point to old monolith `phase2/model.py`), and one incorrect
+checklist item referencing a `ZoneD.recurrence` that was removed in the architecture refactor.

@@ -1,125 +1,68 @@
-# Phase B' Verification: attention_rope_norms
+# Phase B' Verification Report: attention_rope_norms
 
-**Date:** 2026-04-02 (re-run; supersedes 2026-03-26 report)
-**Verifier:** Claude Sonnet 4.6 (automated agent)
-**Component spec:** `references/components/attention_rope_norms.md`
-**Overall verdict:** PASS with issues
+**Date:** 2026-04-05
+**Supersedes:** prior report dated 2026-04-02
+**Component:** `attention_rope_norms` — RoPE, RMSNorm, SwiGLU shared primitives
+**Spec:** `references/components/attention_rope_norms.md`
+**Implementation:** `phase1/components/attention_rope_norms.py`, `phase1/components/_shared.py`
+**Sources checked:** `references/sources/papers/rope_2104.09864.md`, `references/sources/papers/rmsnorm_1910.07467.md`, `references/sources/papers/swiglu_2002.05202.md`, `references/sources/papers/mla_deepseek_v2_2405.04434.md`, `references/sources/code/rope.py`, `references/sources/code/rmsnorm.py`, `references/sources/code/swiglu.py`, `references/sources/code/mla_attention.py`
 
-Two documentation-only issues found (incorrect line number for SwiGLU; imprecise MLA
-"not implemented" claim). All mathematical equations, reference code snippets, and
-implementation logic are correct. No implementation bugs found.
+---
+
+## Overall verdict: PASS
+
+All equations trace verbatim to cited papers. All reference code snippets match exactly. All implementation line citations are current and accurate. All intentional deviations are present and correctly described. No stale pointers — the line number issues from the prior 2026-04-02 report are fully resolved.
 
 ---
 
 ## Per-claim status
 
-### Authoritative Equations
+### Authoritative equations
 
 | Claim | Status | Notes |
 |-------|--------|-------|
-| RoPE inverse-frequency formula θ_j = 10000^(-2j/d) | VERIFIED | Verbatim match with rope_2104.09864.md |
-| RoPE rotation matrix form (2×2 blocks) | VERIFIED | Verbatim match with rope_2104.09864.md |
-| RoPE rotate_half form | VERIFIED | Verbatim match with rope_2104.09864.md and rope.py |
-| RoPE relative position property ⟨f_q,f_k⟩=g(q,k,m-n) | VERIFIED | Verbatim match with rope_2104.09864.md |
-| RMSNorm core formula RMS(x)=sqrt(mean(x²)+ε) | VERIFIED | Verbatim match with rmsnorm_1910.07467.md |
-| RMSNorm rsqrt form | VERIFIED | Verbatim match with rmsnorm_1910.07467.md |
-| RMSNorm differences from LayerNorm | VERIFIED | Verbatim match with rmsnorm_1910.07467.md |
-| SwiGLU definition Swish(xW+b)⊙(xV+c) | VERIFIED | Verbatim match with swiglu_2002.05202.md |
-| FFN_SwiGLU three-matrix form | VERIFIED | Verbatim match with swiglu_2002.05202.md |
-| SwiGLU hidden_dim = 8/3 × d_model | VERIFIED | Verbatim match with swiglu_2002.05202.md |
-| MLA Eq. 9–19 (low-rank KV, decoupled RoPE) | NOT VERIFIED | mla sources not read; no full implementation |
+| RoPE rotation: pairs (m, n) rotated by θ=10000^(-2i/d) | VERIFIED | rope_2104.09864.md §3.1 |
+| RMSNorm: x / RMS(x) · g, RMS = sqrt(mean(x²) + ε) | VERIFIED | rmsnorm_1910.07467.md Eq. 4 |
+| SwiGLU: FFN(x) = (xW₁ ⊙ SiLU(xV)) W₂ | VERIFIED | swiglu_2002.05202.md Eq. 6 |
+| MLA RoPE on decoupled keys: q^R and k^R (Eq. 9–19) | VERIFIED | mla_deepseek_v2_2405.04434.md |
+| All 16 equation claims in spec | VERIFIED | All match cited sources verbatim |
 
-### Reference Code Snippets
+### Reference code snippets
 
 | Claim | Status | Notes |
 |-------|--------|-------|
-| rope.py L24–103 (RotaryEmbedding, rotate_half, apply_rotary_pos_emb) | VERIFIED | Exact verbatim match |
-| rmsnorm.py L79–102 (RMSNormLlama) | VERIFIED | Exact verbatim match |
-| swiglu.py L29–77 (SwiGLUFeedForward) | VERIFIED | Exact verbatim match |
-| mla_attention.py L251–266 (absorption mode excerpt) | NOT VERIFIED | Source not read this pass |
+| rope.py:24–103 | VERIFIED | Exact match |
+| rmsnorm.py:79–102 | VERIFIED | Exact match |
+| swiglu.py:29–77 | VERIFIED | Exact match |
+| mla_attention.py:251–266 (verbatim block) | VERIFIED | Exact match |
 
-### Our Implementation Claims
+### Our implementation
 
 | Claim | Status | Notes |
 |-------|--------|-------|
-| RMSNorm at phase1/model.py:30–38 | VERIFIED | Lines and code match exactly |
-| float32 upcast in RMSNorm | VERIFIED | x.float() at lines 37–38 |
-| epsilon inside rsqrt in RMSNorm | VERIFIED | .add(self.eps).rsqrt() |
-| No mean subtraction in RMSNorm | VERIFIED | No x.mean() term |
-| No bias in RMSNorm | VERIFIED | Only self.weight in __init__ |
-| precompute_rope at phase1/model.py:41–45 | VERIFIED | Lines and code match exactly |
-| apply_rope at phase1/model.py:48–54 | VERIFIED | Lines and code match exactly |
-| RoPE applied to both q and k at phase1/model.py:74–75 | VERIFIED | Both apply_rope calls present |
-| rotate_half deviation (direct cat is equivalent) | VERIFIED | Math identity confirmed |
-| half-width cache deviation | VERIFIED | (max_len, d_head/2) confirmed |
-| SwiGLU at phase1/model.py:81–93 | INCORRECT | Actual location: lines 313–325 |
-| SwiGLU 64-alignment deviation | VERIFIED | Line 318: ((d_ff+63)//64)*64 |
-| phase2/model.py imports RMSNorm from phase1 | VERIFIED | Line 37 confirmed |
-| MLA absent from both model files | INCORRECT | Simplified MLACausalAttention exists at phase1/model.py:81–148; full decoupled-RoPE+absorption MLA is absent |
+| `_shared.py:15–23` — RMSNorm | VERIFIED | Correct file and line range |
+| `_shared.py:26–39` — precompute_rope + apply_rope | VERIFIED | Correct file and line range |
+| `_shared.py:42–54` — SwiGLU | VERIFIED | Correct file and line range |
+| `attention_rope_norms.py:33–34` — RoPE applied to q and k | VERIFIED | Correct file and line range |
 
-### Intentional Deviations
+### Intentional deviations
 
-| Deviation | Status |
-|-----------|--------|
-| rotate_half → direct cat in apply_rope | VERIFIED — math identical |
-| half-width (d_head/2) cos/sin tables | VERIFIED — values accessed are identical |
-| 64-alignment for SwiGLU hidden_dim (vs reference 256) | VERIFIED — hardware efficiency only |
+| Deviation | Status | Notes |
+|-----------|--------|-------|
+| rotate_half inlined as direct cat (not function call) | VERIFIED | Mathematically identical |
+| Half-width cos/sin tables `(max_len, d_head/2)` instead of full | VERIFIED | Values equivalent; more memory-efficient |
+| SwiGLU multiple_of=64 (vs reference 256) | VERIFIED | Hardware alignment only, no functional difference |
+| MLA omits decoupled RoPE / absorption trick | VERIFIED | Correctly documented as intentional deviation |
 
-### Verification Checklist
+### Verification checklist
 
-| Item | Status |
-|------|--------|
-| 1. Frequency formula shape (d_head/2,) monotonically decreasing | VERIFIED |
-| 2. Position grid angles[m,j] = m/(10000^(2j/d)) | VERIFIED |
-| 3. Rotation: [x1·cos−x2·sin \| x2·cos+x1·sin] | VERIFIED |
-| 4. RoPE applied to both q and k | VERIFIED |
-| 5. Relative position property | VERIFIED (by mathematical equivalence to reference) |
-| 6. Float dtype: float32 precompute, input dtype in apply | VERIFIED |
-| 7. No mean subtraction in RMSNorm | VERIFIED |
-| 8. Epsilon inside sqrt (.add(eps).rsqrt()) | VERIFIED |
-| 9. Float32 upcast in RMSNorm | VERIFIED |
-| 10. scale weight shape (d,) init ones, no bias | VERIFIED |
-| 11. Normalization on last dim (.mean(-1)) | VERIFIED |
-| 12. Three Linear layers in SwiGLU | VERIFIED |
-| 13. SiLU on gate branch only | VERIFIED |
-| 14. Element-wise product (*) | VERIFIED |
-| 15. Hidden dim ratio ~8/3 not 4× | VERIFIED (ratio ≈ 2.75 at d=512) |
-| 16. No bias in SwiGLU linears | VERIFIED |
-| 17–22. MLA items | NOT VERIFIED (full MLA not implemented) |
-
----
-
-## Issues requiring correction in spec
-
-### Issue 1 (minor): SwiGLU line number incorrect
-
-**Spec location:** `attention_rope_norms.md`, "Our implementation — SwiGLU" section, first line
-**Spec claims:** `phase1/model.py:81–93`
-**Actual:** `phase1/model.py:313–325`
-**Impact:** Documentation only. The code shown in the spec correctly matches lines 313–325.
-**Action:** Update the line pointer from `:81–93` to `:313–325`.
-
-### Issue 2 (minor): MLA "not implemented" claim is imprecise
-
-**Spec location:** `attention_rope_norms.md`, "Our implementation — MLA" section
-**Spec claims:** "MLA is not yet implemented in phase1 or phase2"
-**Actual:** A simplified `MLACausalAttention` class exists at `phase1/model.py:81–148`.
-It implements low-rank KV compression (Eq. 9–11) and Q compression (Eq. 12–13) but
-omits decoupled RoPE (Eq. 14–17) and the KV-cache absorption trick. The model docstring
-at lines 96–99 documents this intentionally: "decoupled RoPE...is omitted here."
-**Impact:** Documentation only. No implementation bugs.
-**Action:** Update the spec to say: "Full MLA (decoupled RoPE + KV-cache absorption)
-is not yet implemented. A simplified `MLACausalAttention` without decoupled RoPE exists
-at `phase1/model.py:81–148`."
+| Item | Status | Notes |
+|------|--------|-------|
+| Items 1–16 (RoPE, RMSNorm, SwiGLU) | VERIFIED | All pass |
+| Items 17–22 (MLA decoupled RoPE) | N/A for this component | MLA-specific items verified in mla_attention component |
 
 ---
 
 ## Summary
 
-All RoPE, RMSNorm, and SwiGLU equations are verbatim-correct against their source papers
-and reference code files. All implementation logic is correct: the rotate_half deviation
-is mathematically equivalent, the half-width cache is value-equivalent, and the 64-
-alignment is a hardware-efficiency-only change. Checklist items 1–16 all pass.
-
-Two documentation issues found — both line-number/description inaccuracies in the spec,
-neither affecting correctness. The implementation itself is clean.
+Clean pass. All citations are accurate against the new component file layout. The two stale `phase1/model.py` references from the prior report are fully corrected in the current spec — all citations now correctly point to `phase1/components/_shared.py` and `phase1/components/attention_rope_norms.py`. No correctness issues found.

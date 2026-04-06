@@ -1,10 +1,29 @@
 {
   "hooks": {
-    "PostCompact": [
+    "PreToolUse": [
       {
-        "type": "command",
-        "command": "echo '## Post-Compaction Context\n\nIMPORTANT: Training runs on a REMOTE environment. This repo has NO live\naccess to training output. The user manually downloads reports and provides\nthem. Do NOT attempt to run training commands or read live metrics locally.\n\nRead STUDY_DESIGN.md and TRAINING_METHODOLOGY.md for current experiment plan.\nBefore any model change: python utils/verify.py check\nVerification workflow: .claude/rules/run-full-verification.md'"
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/brandon/.claude/hooks/filter-nix-shape-check.sh"
+          }
+        ]
       }
     ]
+  },
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:www.anthropic.com)",
+      "WebFetch(domain:arxiv.org)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:github.com)",
+      "Bash(ruff check:*)",
+      "Bash(nix-shell --run \"python utils/shape_check.py\" 2>&1 | grep -v \"^dev shell\\\\|shape_check\\\\|ruff check\")"
+    ]
+  },
+  "outputStyle": "Explanatory",
+  "remote": {
+    "defaultEnvironmentId": "env_01X2Q3X9eit34ncLxuGEmbuX"
   }
 }
