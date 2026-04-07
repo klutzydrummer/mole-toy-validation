@@ -7,38 +7,53 @@ Base config: `d=512, n_layers=8, n_heads=8, SwiGLU, RoPE, RMSNorm, weight-tying`
 
 ## Phase 1 — Component ablation at ~28M parameters
 
-### Status: Preliminary (single-seed, runs in progress)
+### Status: Seed42 runs complete. Multi-seed reruns pending for primary claims Q1/Q2.
 
-| Config | Best val BPC | Params | Steps | Seed | Status |
-|--------|-------------|--------|-------|------|--------|
-| compose | 3.5316 | 31.1M | 100k | N/A (pre-seed-control) | complete |
-| mol | 3.5702 | 31.1M | 100k | N/A (pre-seed-control) | complete |
-| mhc (original, n=2, SK) | 3.5736 | 27.8M | 100k | N/A (pre-seed-control) | complete |
-| mhc (rerun, n=4, KromHC) | TBD | ~29M | 100k | — | pending |
-| baseline | 3.5875 | 27.8M | 100k | N/A (pre-seed-control) | complete |
-| baseline_wide | TBD | ~31.1M | 100k | — | pending |
-| mol_single (rank=72) | TBD | ~31.1M | 100k | — | pending (seed42 run at rank=64 invalidated — rank corrected to 72) |
+#### Seed42 results (primary dataset — all at d=512, 100k steps, seed=42)
+
+| Config | Best val BPC | Params | Notes |
+|--------|-------------|--------|-------|
+| diff_attn_seed42 | 3.5131 | ~33.5M | Best overall; ~25% more attn params than baseline — not param-matched |
+| baseline_wide_seed42 | 3.5355 | ~31.1M | Q1 control (param-matched to mol via d_ff=1600) |
+| compose_seed42 | 3.5416 | 31.1M | grad_norm rising 0.80→1.37; diagnostic pending |
+| mhc_seed42 | 3.5428 | ~29M | n=4, KromHC; grad_norm rising — do not compose until diagnosed |
+| mol_seed42 | 3.5441 | 31.1M | Phase 2 inner network |
+| diff_mla_seed42 | 3.5474 | ~31M | 1 loss spike; KV bottleneck still limiting |
+| mol_single_seed42 | 3.5516 | ~31.1M | rank=72 (capacity-matched to mol); prior rank=64 run invalidated |
+| baseline_seed42 | 3.5605 | 27.8M | Reference |
+| mla_seed42 | 3.5859 | ~28.5M | KV compression (d_c=128) too lossy at this scale |
+
+#### Pre-seed-control runs (seeds not recorded; for historical reference only)
+
+| Config | Best val BPC | Params |
+|--------|-------------|--------|
+| compose | 3.5316 | 31.1M |
+| mol | 3.5702 | 31.1M |
+| mhc (n=2, Sinkhorn) | 3.5736 | 27.8M |
+| baseline | 3.5875 | 27.8M |
 
 **Important caveats:**
-- All completed runs predate seed control (added 2026-03-23). Seeds not recorded.
-- Multi-seed reruns (3 seeds each) are required for primary claims Q1 and Q2.
-- `mol vs. baseline` is NOT a controlled comparison — mol has 3.35M more parameters.
-  The controlled comparison for Q1 is `mol vs. baseline_wide`.
-  The controlled comparison for Q2 is `mol vs. mol_single`.
-- `mhc` failure (lost to baseline by 0.0139 BPC) is explained in
-  `references/components/mhc.md §Scale limitations` — scale below validated minimum,
-  n=2 streams, SK approximation gap.
+- **All seed42 results are single-seed.** Multi-seed reruns (3 seeds each) are required
+  for primary claims Q1 and Q2 per Melis et al. 2018 reporting standard.
+- **Q1:** baseline_wide (3.5355) beats mol (3.5441) by 0.0086 BPC — capacity dominates
+  routing at this scale. Margin is within typical cross-seed variance; result is preliminary.
+- **Q2:** mol (3.5441) beats mol_single (3.5516) by 0.0075 BPC — routing adds modest value.
+  Also preliminary pending multi-seed confirmation.
+- **diff_attn capacity caveat:** diff_attn's result (3.5131) reflects architecture +
+  capacity advantage combined (~25% more attention params). Not a controlled comparison.
+- **mhc grad_norm:** rising 0.80→1.37 over 100k steps with no stabilization. Do not
+  compose mHC until diagnosed. Diagnostic: `--config mhc --max_lr 1.5e-4 --total_steps 25000`.
 
 ### Multi-seed rerun plan (pending)
 
-Requires seed control to be deployed on cloud (merged 2026-03-23). Run order:
+Reporting standard (Melis et al. 2018): a claim is valid if margin > 3× cross-seed std,
+or worst seed of new config beats best seed of baseline.
+
+Run order:
 1. `baseline` × 3 seeds (42, 1, 2) — establishes variance
 2. `baseline_wide` × 3 seeds — Q1 parameter-matched control
 3. `mol` × 3 seeds — Q1 treatment
 4. `mol_single` × 3 seeds — Q2 comparison
-
-Reporting standard (Melis et al. 2018): a claim is valid if margin > 3× cross-seed std,
-or worst seed of new config beats best seed of baseline.
 
 ---
 

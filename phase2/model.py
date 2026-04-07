@@ -79,6 +79,12 @@ class OuterModel(nn.Module):
         # ── Ablations ─────────────────────────────────────────────────────────
         "outer_crl_learned_noste": dict(encoder="crl",         router="learned_e2e",
                                         use_ste=False),
+        # Clean routing ablation: same CRL encoder as outer_crl, fixed-stride router.
+        # outer_strided (identity encoder + fixed_stride) conflates no-encoder with
+        # fixed routing — cannot isolate routing quality from encoder quality.
+        # outer_crl_fixed_stride isolates the routing axis: same encoder, different policy.
+        # Proper fixed-routing baseline for the Q3 outer_crl_learned comparison.
+        "outer_crl_fixed_stride": dict(encoder="crl",          router="fixed_stride"),
         # outer_crl_r2 removed: target_rate=0.5 has no effect under cosine_rule routing
         # (target_rate is only read in fixed_stride mode). The config was behaviourally
         # identical to outer_crl. outer_strided already provides the fixed-stride baseline.

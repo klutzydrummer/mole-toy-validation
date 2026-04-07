@@ -41,7 +41,7 @@ nix-shell --run "ruff check ."                  # lint
 `shell.nix` provides CPU-only torch + torchinfo + ruff. A single forward pass at full production dims (d=512, seq=256, batch=1) costs ~200 MB RAM — safe to run locally.
 
 `shape_check.py` validates:
-- Output shape contracts for all 24 non-upcycle configs (9 Phase 1 + 10 scaling + 5 Phase 2 — outer_crl_r2 removed)
+- Output shape contracts for all 29 non-upcycle configs (9 Phase 1 + 10 scaling + 10 Phase 2)
 - No NaN/Inf in logits
 - boundary_probs in [0, 1] for all Phase 2 configs
 
@@ -158,7 +158,7 @@ Do not compose mHC+MoL+HDC until mHC's grad norm issue is diagnosed. The rising 
 
 Phase 2 training: 50k steps, alpha=0.03 (H-Net ratio loss), alpha warmup over first 2k steps.
 
-**9 configs (OuterModel.CONFIGS):**
+**10 configs (OuterModel.CONFIGS):**
 
 | Config | Encoder | Router | Notes |
 |--------|---------|--------|-------|
@@ -171,6 +171,7 @@ Phase 2 training: 50k steps, alpha=0.03 (H-Net ratio loss), alpha warmup over fi
 | `outer_mla` | MLA (11.5M) | learned_e2e | KV-compressed attention |
 | `outer_strided` | Identity | fixed_stride | Hard lower bound (no encoder) |
 | `outer_crl_learned_noste` | CRL | learned_e2e | STE ablation (use_ste=False) |
+| `outer_crl_fixed_stride` | CRL (282K) | fixed_stride | Clean routing ablation: same encoder as outer_crl, fixed routing. Isolates routing quality from encoder quality for Q3. |
 
 **Encoder capacity note:** These are architecture-vs-architecture comparisons at d=512, NOT param-matched. CRL (bottlenecked) is 45× smaller than transformer variants. `outer_crl_full` (1.57M) removes the bottleneck confound. Differences in BPC may reflect capacity, not architecture quality.
 

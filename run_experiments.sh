@@ -312,6 +312,7 @@ case "$TARGET" in
     run_phase2 outer_mla
     run_phase2 outer_strided         # hard lower bound (no encoder)
     run_phase2 outer_crl_learned_noste  # STE ablation
+    run_phase2 outer_crl_fixed_stride   # clean routing ablation (CRL encoder + fixed stride)
     ;;
 
   phase1)
@@ -338,6 +339,7 @@ case "$TARGET" in
     run_phase2 outer_mla
     run_phase2 outer_strided
     run_phase2 outer_crl_learned_noste
+    run_phase2 outer_crl_fixed_stride
     ;;
 
   phase1_scaling)
@@ -374,7 +376,8 @@ case "$TARGET" in
 
   # Individual Phase 2 configs (standard, 50k steps)
   outer_crl | outer_crl_learned | outer_crl_full | outer_crl_full_learned | \
-  outer_transformer | outer_diff_attn | outer_mla | outer_strided | outer_crl_learned_noste)
+  outer_transformer | outer_diff_attn | outer_mla | outer_strided | \
+  outer_crl_learned_noste | outer_crl_fixed_stride)
     run_smoke_test
     run_phase2 "$TARGET"
     ;;
@@ -388,7 +391,7 @@ case "$TARGET" in
     echo "Phase 2 configs: outer_crl outer_crl_learned"
     echo "                 outer_crl_full outer_crl_full_learned"
     echo "                 outer_transformer outer_diff_attn outer_mla"
-    echo "                 outer_strided outer_crl_learned_noste"
+    echo "                 outer_strided outer_crl_learned_noste outer_crl_fixed_stride"
     exit 1
     ;;
 esac
@@ -404,10 +407,10 @@ import json, os, glob
 PHASE1 = ["baseline", "baseline_wide", "mhc", "mol", "mol_single", "compose",
           "mla", "diff_attn", "diff_mla"]
 PHASE2 = [
-    "outer_crl", "outer_crl_r2", "outer_crl_learned",
+    "outer_crl", "outer_crl_learned",
     "outer_crl_full", "outer_crl_full_learned",
     "outer_transformer", "outer_diff_attn", "outer_mla",
-    "outer_strided", "outer_crl_learned_noste",
+    "outer_strided", "outer_crl_learned_noste", "outer_crl_fixed_stride",
 ]
 
 def print_phase(label, configs):

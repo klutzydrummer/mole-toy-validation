@@ -51,6 +51,16 @@ class TransformerBlock(nn.Module):
             self.ffn = SwiGLU(d, d_ff=d_ff)
 
         if use_mhc:
+            # mHC + non-standard attention composition is not yet implemented.
+            # The required architectural decision (H_pre-collapse → MLA/DiffAttn →
+            # H_post-redistribute) has not been validated against the mHC paper's
+            # full-residual-stream design. Block early to prevent silent misuse.
+            if use_mla or use_diff_attn or use_diff_mla:
+                raise ValueError(
+                    "use_mhc=True with use_mla/use_diff_attn/use_diff_mla is not yet "
+                    "supported. See COMPOSITION_GATE.md — the mHC wrapping architecture "
+                    "for non-standard attention must be decided and validated first."
+                )
             self.hc_attn = HyperConnection(n_streams, d)
             self.hc_ffn  = HyperConnection(n_streams, d)
 

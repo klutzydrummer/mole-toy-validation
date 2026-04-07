@@ -4,7 +4,7 @@ Shape validation — single forward pass of every model config on CPU.
 Checks:
   - Phase 1 (9 configs) at d=512, seq=256, batch=1
   - Phase 1 scaling (10 configs: baseline/mla/diff_attn/diff_mla/mol at d=256 and d=768)
-  - Phase 2 (9 configs) at d=512
+  - Phase 2 (10 configs) at d=512
 
 Skips upcycle configs (they require a pre-trained mol checkpoint).
 

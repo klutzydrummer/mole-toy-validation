@@ -55,7 +55,9 @@ def _unwrap(model):
 
 
 @torch.no_grad()
-def evaluate(model, val_loader, device, max_batches=50, amp_dtype=torch.bfloat16):
+def evaluate(model, val_loader, device, max_batches=50, amp_dtype=None):
+    if amp_dtype is None:
+        _, amp_dtype, _ = get_amp_config(device)
     model.eval()
     total_loss = 0.0
     n_batches = 0
@@ -259,20 +261,38 @@ def train(config: str, d: int = 512, n_layers: int = 8, n_heads: int = 8,
             if lit is not None:
                 _lit_safe(lit, {"val/loss": val_loss, "val/bpc": val_bpc}, step=step)
 
-            if config in ("mol", "compose"):
-                mol_stats = _unwrap(model).get_mol_stats()
-                if mol_stats:
-                    avg_bal = sum(s["expert_balance"] for s in mol_stats) / len(mol_stats)
-                    print(f"  >>> MoL avg balance: {avg_bal:.3f} (1.0 = perfect)")
-                    for s in [mol_stats[0], mol_stats[-1]]:
-                        counts = s["expert_counts"]
-                        total_c = sum(counts)
-                        pcts = [f"{100*c/total_c:.0f}%" for c in counts] if total_c > 0 else []
-                        print(f"      layer {s['layer']} experts: {' '.join(pcts)}")
-                    logger.log_mol_stats(step, mol_stats)
-                    if lit is not None:
-                        _lit_safe(lit, {"mol/avg_balance": avg_bal}, step=step)
+            mol_stats = _unwrap(model).get_mol_stats()
+            if mol_stats:
+                avg_bal = sum(s["expert_balance"] for s in mol_stats) / len(mol_stats)
+                print(f"  >>> MoL avg balance: {avg_bal:.3f} (1.0 = perfect)")
+                for s in [mol_stats[0], mol_stats[-1]]:
+                    counts = s["expert_counts"]
+                    total_c = sum(counts)
+                    pcts = [f"{100*c/total_c:.0f}%" for c in counts] if total_c > 0 else []
+                    print(f"      layer {s['layer']} experts: {' '.join(pcts)}")
+                logger.log_mol_stats(step, mol_stats)
+                if lit is not None:
+                    _lit_safe(lit, {"mol/avg_balance": avg_bal}, step=step)
                 _unwrap(model).reset_mol_counts()
+
+            # Log mHC H_pre weights for compose config to detect routing signal quality.
+            # If H_pre stays diffuse (non-one-hot), MoL routing is on a blurred stream.
+            # Logged as a list of per-layer [attn, ffn] weight vectors (length n=4 each).
+            hc_stats = []
+            for blk in _unwrap(model).blocks:
+                if hasattr(blk, "hc_attn"):
+                    import torch.nn.functional as _F
+                    hc_stats.append({
+                        "pre_attn": _F.softmax(blk.hc_attn.pre_logits.detach(), dim=0).tolist(),
+                        "pre_ffn":  _F.softmax(blk.hc_ffn.pre_logits.detach(), dim=0).tolist(),
+                    })
+            if hc_stats:
+                with open(logger.log_path, "a") as _hf:
+                    _hf.write(json.dumps({"step": step, "hc_pre_weights": hc_stats,
+                                          "type": "mhc_hpre"}) + "\n")
+                # Print max H_pre weight across streams — near 1.0 = near one-hot (good)
+                max_pre = max(max(l["pre_attn"]) for l in hc_stats)
+                print(f"  >>> mHC H_pre max weight: {max_pre:.3f} (1.0 = one-hot, clean routing)")
 
             if val_bpc < best_val_bpc:
                 best_val_bpc = val_bpc

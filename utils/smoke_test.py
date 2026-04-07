@@ -49,6 +49,10 @@ RESULT_FILE = REPO_ROOT / "checkpoints" / "smoke_test_result.json"
 ENCODER_DIVERSITY_MIN   = 1e-4   # encoder_out.var(dim=1).mean()
 CONCEPT_DIVERSITY_MIN   = 1e-4   # concept_tokens.var(dim=1).mean()
 LOSS_REDUCTION_REQUIRED = 0.90   # loss at end must be < 0.90 * loss at start
+# Boundary entropy: H(p) = -(p*log(p) + (1-p)*log(1-p)) averaged over all positions.
+# Max entropy = 1.0 (p=0.5 everywhere, router has not learned to make confident decisions).
+# A well-trained router should converge below 0.6 — confident boundary vs. non-boundary.
+BOUNDARY_ENTROPY_MAX    = 0.6
 
 
 def _git_blob_hash(rel_path: str) -> str | None:
@@ -142,6 +146,7 @@ def run_smoke_test(steps: int = 1000, batch_size: int = 32) -> dict:
 
     early_losses  = []   # steps 0 .. steps//5
     late_losses   = []   # steps 4*steps//5 .. steps
+    late_entropies = []  # steps 4*steps//5 .. steps (boundary entropy)
     any_nonfinite = False
 
     model.train()
@@ -178,6 +183,11 @@ def run_smoke_test(steps: int = 1000, batch_size: int = 32) -> dict:
             early_losses.append(loss.item())
         if step >= late_cutoff:
             late_losses.append(loss.item())
+            # Boundary entropy: H(p) = -(p*log2(p) + (1-p)*log2(1-p)) per position
+            with torch.no_grad():
+                p = bp.detach().clamp(1e-7, 1 - 1e-7)
+                ent = -(p * p.log2() + (1 - p) * (1 - p).log2()).mean().item()
+            late_entropies.append(ent)
 
         if (step + 1) % 200 == 0:
             elapsed = time.time() - t0
@@ -194,17 +204,19 @@ def run_smoke_test(steps: int = 1000, batch_size: int = 32) -> dict:
     loss_early = sum(early_losses) / max(1, len(early_losses))
     loss_late  = sum(late_losses)  / max(1, len(late_losses))
     loss_ratio = loss_late / max(loss_early, 1e-9)
+    boundary_entropy_late = sum(late_entropies) / max(1, len(late_entropies))
 
     checks = {}
     metrics = {
-        "loss_early":         loss_early,
-        "loss_late":          loss_late,
-        "loss_ratio":         loss_ratio,
-        "encoder_diversity":  diversity["encoder_diversity"],
-        "concept_diversity":  diversity["concept_diversity"],
-        "any_nonfinite":      any_nonfinite,
-        "steps":              steps,
-        "elapsed_seconds":    elapsed,
+        "loss_early":              loss_early,
+        "loss_late":               loss_late,
+        "loss_ratio":              loss_ratio,
+        "encoder_diversity":       diversity["encoder_diversity"],
+        "concept_diversity":       diversity["concept_diversity"],
+        "boundary_entropy_late":   boundary_entropy_late,
+        "any_nonfinite":           any_nonfinite,
+        "steps":                   steps,
+        "elapsed_seconds":         elapsed,
     }
 
     print()
@@ -254,6 +266,21 @@ def run_smoke_test(steps: int = 1000, batch_size: int = 32) -> dict:
         checks["concept_diversity"],
         "CRITICAL: Concept tokens are near-identical — SimpleDecoder EMA will collapse "
         "to a single repeated vector. Fix Zone E before running full Phase 2.",
+    )
+
+    # Check 6: boundary entropy (router not stuck at maximum uncertainty)
+    # outer_crl uses cosine_rule (no learned params) — entropy may stay high.
+    # This check is informational for outer_crl; would be a hard fail for learned_e2e configs.
+    checks["boundary_entropy"] = (
+        math.isfinite(boundary_entropy_late) and
+        boundary_entropy_late < BOUNDARY_ENTROPY_MAX
+    )
+    _print_check(
+        f"Boundary entropy below max  ({boundary_entropy_late:.3f} < {BOUNDARY_ENTROPY_MAX:.2f})",
+        checks["boundary_entropy"],
+        "Router appears stuck at maximum uncertainty (p≈0.5 everywhere). "
+        "Boundaries are random, not content-aware. For learned_e2e configs this is a "
+        "hard failure. For cosine_rule (outer_crl) it may be expected early in training.",
     )
 
     all_pass = all(checks.values())

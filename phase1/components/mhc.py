@@ -41,23 +41,21 @@ class KromHCResidual(nn.Module):
     Static variant only (input-independent). Dynamic extension not implemented here.
     """
 
-    # The two 2×2 permutation matrices in the Birkhoff polytope for n=2
-    _I2 = torch.eye(2)
-    _S2 = torch.tensor([[0., 1.], [1., 0.]])
-
     def __init__(self):
         super().__init__()
         # Two factor logit pairs — each length-2 vector over {identity, swap}.
         # Init [0, -8]: softmax → [≈1, ≈0] → a≈1 → U≈I → H_res = I⊗I ≈ I_4.
         self.factor1_logits = nn.Parameter(torch.tensor([0.0, -8.0]))
         self.factor2_logits = nn.Parameter(torch.tensor([0.0, -8.0]))
+        # Register as buffers so .to(device) moves them once and torch.compile can cache them.
+        self.register_buffer("I2", torch.eye(2))
+        self.register_buffer("S2", torch.tensor([[0., 1.], [1., 0.]]))
 
     def forward(self):
         """Returns a 4×4 exactly doubly stochastic matrix."""
-        device = self.factor1_logits.device
-        dtype  = self.factor1_logits.dtype
-        I2 = self._I2.to(device=device, dtype=dtype)
-        S2 = self._S2.to(device=device, dtype=dtype)
+        dtype = self.factor1_logits.dtype
+        I2 = self.I2.to(dtype=dtype)
+        S2 = self.S2.to(dtype=dtype)
 
         a1 = F.softmax(self.factor1_logits, dim=0)[0]  # scalar ∈ (0,1)
         a2 = F.softmax(self.factor2_logits, dim=0)[0]

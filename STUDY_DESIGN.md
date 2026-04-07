@@ -53,13 +53,27 @@ simply that more LoRA capacity (regardless of how it is structured) improves the
 
 ### Q3: Content-aware routing vs. fixed routing (Phase 2)
 
-The comparison is `outer_crl_learned` vs. `outer_strided`.
-Both must be run for the same number of steps (50k) at the same target compression ratio (target_rate=0.25).
-BPC comparison between these two configs is the primary A1 claim.
+The primary comparison is `outer_crl_learned` vs. `outer_crl_fixed_stride` (same CRL encoder,
+different routing policy). This is the clean controlled comparison: routing quality isolated
+from encoder quality. Both run for 50k steps at target_rate=0.25.
 
-**Do not** compare `outer_crl_learned` BPC directly to `mol` BPC to claim Phase 2 improves on Phase 1 —
-they train for different step counts (50k vs. 100k). Use `compression_ratio × FLOPs` framing
-or note the step count difference explicitly.
+`outer_strided` (identity encoder + fixed_stride) is a secondary lower bound — useful for
+bounding the benefit of the encoder itself, but **not** the Q3 controlled comparison because
+it conflates "no encoder" with "fixed routing."
+
+**Important caveats for Q3:**
+- **Iso-step, not iso-FLOP:** `outer_crl_learned` runs the CRL encoder (282K params, 3 CRL
+  layers) on every step. `outer_crl_fixed_stride` runs the same encoder but skips the
+  learned router forward pass. FLOPs per step differ by the router computation cost.
+  Any positive result for learned routing cannot isolate routing benefit from slightly
+  higher per-step compute. Flag this explicitly in any write-up.
+- **Iso-step, not iso-FLOP (outer_strided):** `outer_strided` has zero encoder computation.
+  If it outperforms `outer_crl_learned`, the interpretation is ambiguous — the CRL encoder
+  may be adding noise, not signal. The FLOPs difference is large (~282K params worth).
+
+**Do not** compare `outer_crl_learned` BPC directly to `mol` BPC to claim Phase 2 improves
+on Phase 1 — they train for different step counts (50k vs. 100k). Use
+`compression_ratio × FLOPs` framing or note the step count difference explicitly.
 
 ---
 
@@ -107,8 +121,16 @@ at 3 seeds. They are not required for the Q1/Q2 questions.
 
 ### Phase 2 — outer encoder study
 
-The Phase 2 config set is structured around Q3. 9 configs (OuterModel.CONFIGS).
-The A1 claim is `outer_crl_learned` vs. `outer_strided`.
+The Phase 2 config set is structured around Q3. 10 configs (OuterModel.CONFIGS).
+The Q3 controlled comparison is `outer_crl_learned` vs. `outer_crl_fixed_stride` (same
+encoder, different routing). `outer_strided` is a secondary no-encoder lower bound.
+
+**Note:** The MLA scaling study (§7, if added) cannot independently isolate ratio vs.
+absolute dimension effects because d_c/d=25% is held constant at all scales. At d=256,
+d_c=64; at d=512, d_c=128; at d=768, d_c=192. Both the ratio and the absolute bottleneck
+size vary proportionally with d. To isolate these effects requires running `mla` at d=512
+with a non-default d_c (e.g., d_c=64 to hold absolute dimension constant). This run is
+not currently scheduled but is needed before any scaling claim about MLA can be made.
 
 ---
 

@@ -344,12 +344,19 @@ def train(
             grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0).item()
             optimizer.step()
 
-        # Chunk length stats: L / M per sequence (approximate — exact requires
-        # diff of boundary positions, but L/count captures the mean chunk length)
+        # Chunk length stats: mean chunk length (L/M) and within-sequence std.
+        # chunk_len_var: average per-sequence std of actual inter-boundary gaps.
+        # Distinguishes content-aware (variable gaps) from fixed-stride (uniform gaps).
         with torch.no_grad():
-            bmask_count = (bp.detach() >= 0.5).float().sum(dim=1).clamp(min=1)  # [B]
+            bmask = (bp.detach() >= 0.5)                                         # [B, L] bool
+            bmask_count = bmask.float().sum(dim=1).clamp(min=1)                  # [B]
             chunk_len_mean = (bp.shape[1] / bmask_count).mean().item()
-            chunk_len_var  = (bp.shape[1] / bmask_count).var().item()
+            seq_stds = []
+            for b in range(bp.shape[0]):
+                pos = bmask[b].nonzero(as_tuple=True)[0].float()
+                if len(pos) > 1:
+                    seq_stds.append((pos[1:] - pos[:-1]).std().item())
+            chunk_len_var = sum(seq_stds) / len(seq_stds) if seq_stds else 0.0
 
         log_loss_accum += loss_ntp.item()
         log_comp_accum += loss_r.item()
