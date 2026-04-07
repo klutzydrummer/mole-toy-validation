@@ -1,7 +1,7 @@
 # Phase B' Verification Report: mhc
 
-**Date:** 2026-04-05
-**Supersedes:** prior report dated 2026-04-02
+**Date:** 2026-04-06
+**Supersedes:** prior report dated 2026-04-05
 **Component:** `mhc` — Manifold-Constrained Hyper-Connections + KromHC
 **Spec:** `references/components/mhc.md`
 **Implementation:** `phase1/components/mhc.py`, `phase1/components/transformer_block.py`, `phase1/model.py`
@@ -12,9 +12,16 @@
 ## Overall verdict: PASS with issues
 
 All mathematical equations, reference code snippets, implementation behaviors, and intentional
-deviations are correct. The code matches the spec. The three issues are documentation-only stale
-line number pointers in the verification checklist — they reference the old monolithic
-`phase1/model.py` from before the 2026-04-05 component extraction.
+deviations are correct. The code matches the spec. The three checklist issues are documentation-only
+stale line number pointers referencing the old monolithic `phase1/model.py` from before the
+2026-04-05 component extraction.
+
+**2026-04-06 re-verification note:** `KromHCResidual.__init__` now registers `I2` and `S2` as
+module buffers via `register_buffer("I2", ...)` and `register_buffer("S2", ...)` instead of
+assigning them as class-level attributes `_I2`/`_S2`. The `forward()` method reads `self.I2` and
+`self.S2` (with `.to(dtype=dtype)` for AMP compatibility). No mathematical logic changed. The
+buffer change improves correctness: buffers move with `.to(device)` automatically and are visible
+to `torch.compile`. PASS verdict is unchanged.
 
 ---
 
@@ -35,8 +42,9 @@ line number pointers in the verification checklist — they reference the old mo
 |-------|--------|-------|
 | H_pre near one-hot init (one 0.0, rest -8.0) | VERIFIED | mhc.py:101–103 matches tokenbender/mHC |
 | H_post uniform init (zeros → softmax = 1/n) | VERIFIED | mhc.py:108 |
-| factor_logits init [0, -8] → a≈1 → U≈I | VERIFIED | mhc.py:52–53 |
+| factor_logits init [0, -8] → a≈1 → U≈I | VERIFIED | mhc.py:48–49 |
 | softmax (not softplus) for H_pre/H_post | VERIFIED | F.softmax confirmed |
+| I2/S2 registered as buffers (not class attrs) | VERIFIED | register_buffer at mhc.py:51–52; forward reads self.I2/self.S2 at mhc.py:57–58 |
 
 ### Intentional deviations
 
@@ -81,3 +89,6 @@ line number pointers in the verification checklist — they reference the old mo
 Implementation is mathematically correct. KromHC factorization is exactly doubly stochastic.
 All 6 intentional deviations accurately described and confirmed. Three checklist line citations
 are stale from the pre-extraction monolith — documentation only, no correctness impact.
+
+The 2026-04-06 buffer refactor (`_I2`/`_S2` class attrs → `register_buffer` module buffers) is
+a pure engineering improvement with no effect on math. PASS verdict carries forward.

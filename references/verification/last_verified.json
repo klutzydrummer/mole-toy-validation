@@ -53,9 +53,9 @@
     },
     "mhc": {
       "file_hashes": {
-        "phase1/components/mhc.py": "acb23de7da3a560f59f2d794dfaf9fd2bf24ebff"
+        "phase1/components/mhc.py": "a25aa11c7aed81df636454d6796fe42ee9580c39"
       },
-      "verified_at": "2026-04-05T21:14:29Z",
+      "verified_at": "2026-04-07T03:12:51Z",
       "result": "pass",
       "report": "references/verification/reports/phase_b_prime_mhc.md"
     },
