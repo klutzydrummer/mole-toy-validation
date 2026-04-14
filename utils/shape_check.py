@@ -66,6 +66,9 @@ def check_phase1():
         ("ngpt",           {}),
         ("ngpt_mla",       {}),
         ("ngpt_diff_attn", {}),
+        # nGPT + mHC compositions
+        ("ngpt_mhc_a",     {}),
+        ("ngpt_mhc_c",     {}),
     ]
 
     results = []

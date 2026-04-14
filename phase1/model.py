@@ -67,6 +67,11 @@ class ToyTransformer(nn.Module):
         "ngpt":           dict(use_mhc=False, use_mol=False, use_single_lora=False, use_mla=False, use_diff_attn=False, use_diff_mla=False, use_ngpt=True,  n_streams=1),
         "ngpt_mla":       dict(use_mhc=False, use_mol=False, use_single_lora=False, use_mla=True,  use_diff_attn=False, use_diff_mla=False, use_ngpt=True,  n_streams=1),
         "ngpt_diff_attn": dict(use_mhc=False, use_mol=False, use_single_lora=False, use_mla=False, use_diff_attn=True,  use_diff_mla=False, use_ngpt=True,  n_streams=1),
+        # nGPT + mHC compositions (April 2026)
+        # A: multi-sphere — each stream pinned to S^{d-1}, per-stream α, Fréchet mean mixing
+        # C: nGPT-around-sublayer — full mHC block treated as sublayer, α wraps the block
+        "ngpt_mhc_a":    dict(use_mhc=True,  use_mol=False, use_single_lora=False, use_mla=False, use_diff_attn=False, use_diff_mla=False, use_ngpt=True,  n_streams=4, ngpt_mhc_variant="a"),
+        "ngpt_mhc_c":    dict(use_mhc=True,  use_mol=False, use_single_lora=False, use_mla=False, use_diff_attn=False, use_diff_mla=False, use_ngpt=True,  n_streams=4, ngpt_mhc_variant="c"),
     }
 
     def __init__(self, config: str = "baseline", d: int = 256, n_layers: int = 8,
@@ -93,6 +98,7 @@ class ToyTransformer(nn.Module):
                 use_diff_attn=cfg["use_diff_attn"],
                 use_diff_mla=cfg["use_diff_mla"],
                 use_ngpt=self.use_ngpt,
+                ngpt_mhc_variant=cfg.get("ngpt_mhc_variant", None),
                 n_experts=n_experts,
                 mol_rank=mol_rank, mol_top_k=mol_top_k,
                 d_ff=d_ff,

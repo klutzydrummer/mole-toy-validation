@@ -396,7 +396,8 @@ if __name__ == "__main__":
                         choices=["baseline", "baseline_wide", "mhc", "mol", "mol_single", "compose",
                                  "mla", "diff_attn", "diff_mla",
                                  "diff_mhc", "mla_mhc", "diff_mla_mhc",
-                                 "ngpt", "ngpt_mla", "ngpt_diff_attn"])
+                                 "ngpt", "ngpt_mla", "ngpt_diff_attn",
+                                 "ngpt_mhc_a", "ngpt_mhc_c"])
     parser.add_argument("--d", type=int, default=512)
     parser.add_argument("--n_layers", type=int, default=8)
     parser.add_argument("--n_heads", type=int, default=8)
