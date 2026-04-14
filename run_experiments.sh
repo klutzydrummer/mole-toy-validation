@@ -300,6 +300,14 @@ case "$TARGET" in
     run_phase1 mla
     run_phase1 diff_attn
     run_phase1 diff_mla
+    # go-mHC compositions (April 2026)
+    run_phase1 diff_mhc
+    run_phase1 mla_mhc
+    run_phase1 diff_mla_mhc
+    # nGPT hypersphere experiments (April 2026)
+    run_phase1 ngpt
+    run_phase1 ngpt_mla
+    run_phase1 ngpt_diff_attn
 
     # Phase 2 — smoke test gates ALL configs, no exceptions
     run_smoke_test
@@ -325,6 +333,14 @@ case "$TARGET" in
     run_phase1 mla
     run_phase1 diff_attn
     run_phase1 diff_mla
+    # go-mHC compositions (April 2026)
+    run_phase1 diff_mhc
+    run_phase1 mla_mhc
+    run_phase1 diff_mla_mhc
+    # nGPT hypersphere experiments (April 2026)
+    run_phase1 ngpt
+    run_phase1 ngpt_mla
+    run_phase1 ngpt_diff_attn
     ;;
 
   phase2)
@@ -362,7 +378,9 @@ case "$TARGET" in
     ;;
 
   # Individual Phase 1 configs
-  baseline | mhc | mol | compose | mla | diff_attn | diff_mla)
+  baseline | mhc | mol | compose | mla | diff_attn | diff_mla | \
+  diff_mhc | mla_mhc | diff_mla_mhc | \
+  ngpt | ngpt_mla | ngpt_diff_attn)
     run_phase1 "$TARGET"
     ;;
 
@@ -386,6 +404,8 @@ case "$TARGET" in
     echo "ERROR: Unknown target '$TARGET'"
     echo "Usage: bash run_experiments.sh [all|phase1|phase2|<config>]"
     echo "Phase 1 configs: baseline baseline_wide mhc mol mol_single compose mla diff_attn diff_mla"
+    echo "                 diff_mhc mla_mhc diff_mla_mhc"
+    echo "                 ngpt ngpt_mla ngpt_diff_attn"
     echo "Scaling study:   bash run_experiments.sh phase1_scaling"
     echo "                 (runs baseline mla diff_attn diff_mla mol at d=256 and d=768)"
     echo "Phase 2 configs: outer_crl outer_crl_learned"
@@ -405,7 +425,9 @@ python - <<'EOF'
 import json, os, glob
 
 PHASE1 = ["baseline", "baseline_wide", "mhc", "mol", "mol_single", "compose",
-          "mla", "diff_attn", "diff_mla"]
+          "mla", "diff_attn", "diff_mla",
+          "diff_mhc", "mla_mhc", "diff_mla_mhc",
+          "ngpt", "ngpt_mla", "ngpt_diff_attn"]
 PHASE2 = [
     "outer_crl", "outer_crl_learned",
     "outer_crl_full", "outer_crl_full_learned",

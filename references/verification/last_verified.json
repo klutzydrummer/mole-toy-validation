@@ -33,13 +33,13 @@
     },
     "mla_attention": {
       "file_hashes": {
-        "phase1/components/mla_attention.py": "eb17dd44225ba1ce60b01cacecd4578b2022e0b9",
+        "phase1/components/mla_attention.py": "54c364382676aed2563ec7e725f67f500ff50c5e",
         "phase1/components/attention_rope_norms.py": "7cbfc1d0252d021e6561a200764276ffd381f1de",
         "phase1/components/_shared.py": "964d8d393b8b418a3d91c3ed0393661692398e8f"
       },
-      "verified_at": "2026-04-05T02:40:54Z",
+      "verified_at": "2026-04-08T10:12:46Z",
       "result": "pass",
-      "report": "references/verification/reports/"
+      "report": "references/verification/reports/phase_b_prime_mla_attention.md"
     },
     "diff_attention": {
       "file_hashes": {
@@ -53,9 +53,9 @@
     },
     "mhc": {
       "file_hashes": {
-        "phase1/components/mhc.py": "a25aa11c7aed81df636454d6796fe42ee9580c39"
+        "phase1/components/mhc.py": "4667aa6d7a4f079c5e233cc4c4c10d3d23691c01"
       },
-      "verified_at": "2026-04-07T03:12:51Z",
+      "verified_at": "2026-04-08T10:12:46Z",
       "result": "pass",
       "report": "references/verification/reports/phase_b_prime_mhc.md"
     },

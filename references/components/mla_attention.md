@@ -5,10 +5,12 @@
 **Name:** MLA — Multi-Head Latent Attention
 **Class:** `MLACausalAttention` in `phase1/components/mla_attention.py`
 
-**Description:** Causal self-attention with low-rank KV compression. Instead of projecting
-queries, keys, and values independently at full dimension, both K and V are computed from a
-shared compressed latent `c_KV = W_DKV · x ∈ ℝ^{d_c}` where d_c ≪ d. Q uses a separate
-latent bottleneck. RoPE applied at full head dimension. Standard causal softmax attention.
+**Description:** Causal self-attention with low-rank KV compression, decoupled RoPE, and
+RMSNorm at both latent bottlenecks. K and V are computed from a shared compressed latent
+`c_KV = RMSNorm(W_DKV · x) ∈ ℝ^{d_c}`. Q uses a separate compressed latent with its own
+RMSNorm. Decoupled RoPE (Eq. 14–19): content path (no RoPE) and positional path (RoPE on
+`d_h_R`-dim projections) are concatenated per head. Updated April 2026 from the original
+no-RMSNorm, no-decoupled-RoPE version.
 
 ---
 
@@ -47,8 +49,9 @@ Variables:
 - `W^{UV}`  ∈ ℝ^{n_h·d_h × d_c}    — up-projection: KV latent → values
 - `d_c` = KV compression dimension (≪ n_h·d_h)
 
-At toy scale (d=512, n_heads=8, d_head=64): `d_c = d//4 = 128` vs standard `n_h·d_h = 512`.
-KV parameter reduction: 2 × (d × d_c) vs 2 × (d × d) — a 4× reduction.
+At toy scale (d=512, n_heads=8, d_head=64): `d_c = d//2 = 256` vs standard `n_h·d_h = 512`.
+KV parameter reduction: 2 × (d × d_c) vs 2 × (d × d) — a 2× reduction (changed from 4×
+in April 2026; d//4 caused degradation even with decoupled RoPE per arXiv:2506.09342).
 
 ### Equations 12–13 — Query compression
 
@@ -66,6 +69,26 @@ At toy scale: `d_c' = d//2 = 256`.
 
 Paper quote (verbatim):
 > "An RMSNorm is applied after c_t^Q (and c_t^{KV}) for training stability."
+
+**Our implementation now includes these norms** (updated April 2026, see deviations).
+
+### Equations 14–19 — Decoupled RoPE
+
+```
+q_t^R = RoPE(W^{QR} c_t^Q)    per-head positional query from Q latent     (14)
+k_t^R = RoPE(W^{KR} h_t)      single shared positional key from input      (15)
+
+q_{t,i} = [q_{t,i}^C ; q_{t,i}^R]   content + positional concatenated      (16)
+k_{t,i} = [k_{t,i}^C ; k_t^R]       content + shared positional key         (17)
+
+o_{t,i} = Σ_j Softmax_j( q_{t,i}^T k_{j,i} / sqrt(d_h + d_h^R) ) v_{j,i}  (18)
+u_t = W^O [o_{t,1}; ...; o_{t,n_h}]                                         (19)
+```
+
+Where `d_h^R = d_h / 2` (= 32 at d=512). `W^{QR}` projects the Q latent to per-head
+RoPE vectors; `W^{KR}` projects input directly to a **single shared** positional key
+(broadcast to all heads at attention time). **Our implementation now includes decoupled
+RoPE** (updated April 2026, see deviations).
 
 ---
 
@@ -103,76 +126,85 @@ bottleneck. Field names in the source: `wkv_a` = W^{DKV}, `wkv_b` = joint W^{UK}
 
 | Class | Lines | Role |
 |-------|-------|------|
-| `MLACausalAttention` | 15–82 | Full MLA layer: KV/Q compression, RoPE, SDPA, output projection |
-| `MLACausalAttention.__init__` | 36–62 | Projection layers and RoPE buffers |
-| `MLACausalAttention.forward` | 64–82 | Forward: compress → rope → SDPA → project |
+| `MLACausalAttention` | 17–120 | Full MLA layer: KV/Q compression, decoupled RoPE, SDPA, output projection |
+| `MLACausalAttention.__init__` | 48–84 | Projection layers, norms, and RoPE buffers |
+| `MLACausalAttention.forward` | 86–120 | Forward: compress → norm → rope → cat → SDPA → project |
 
-### KV compression path (phase1/components/mla_attention.py:69–71)
+### KV compression path (phase1/components/mla_attention.py:91–93)
 
 ```python
-c_kv = self.W_DKV(x)                                    # Eq. 9: [B, L, d_c]
-k = self.W_UK(c_kv).reshape(B, L, nh, dh).transpose(1, 2)  # Eq. 10: [B, nh, L, dh]
-v = self.W_UV(c_kv).reshape(B, L, nh, dh).transpose(1, 2)  # Eq. 11: [B, nh, L, dh]
+c_kv = self.kv_norm(self.W_DKV(x))                             # Eq. 9 + RMSNorm: [B, L, d_c]
+k_c  = self.W_UK(c_kv).reshape(B, L, nh, dh).transpose(1, 2)  # Eq. 10: content K [B, nh, L, dh]
+v    = self.W_UV(c_kv).reshape(B, L, nh, dh).transpose(1, 2)  # Eq. 11: [B, nh, L, dh]
 ```
 
-### Q compression path (phase1/components/mla_attention.py:74–75)
+### Q compression path (phase1/components/mla_attention.py:96–97)
 
 ```python
-c_q = self.W_DQ(x)                                      # Eq. 12: [B, L, d_c_q]
-q = self.W_UQ(c_q).reshape(B, L, nh, dh).transpose(1, 2)   # Eq. 13: [B, nh, L, dh]
+c_q  = self.q_norm(self.W_DQ(x))                               # Eq. 12 + RMSNorm: [B, L, d_c_q]
+q_c  = self.W_UQ(c_q).reshape(B, L, nh, dh).transpose(1, 2)   # Eq. 13: content Q [B, nh, L, dh]
 ```
 
-### RoPE and SDPA (phase1/components/mla_attention.py:77–82)
+### Decoupled RoPE (phase1/components/mla_attention.py:101–115)
 
 ```python
-q = apply_rope(q, self.rope_cos, self.rope_sin)
-k = apply_rope(k, self.rope_cos, self.rope_sin)
-out = F.scaled_dot_product_attention(q, k, v, is_causal=True)
-out = out.transpose(1, 2).reshape(B, L, D)
-return self.out(out)
+q_rope = apply_rope(self.W_QR(c_q).reshape(B,L,nh,d_h_R).transpose(1,2), ...)  # Eq. 14
+k_rope = apply_rope(self.W_KR(x).reshape(B,L,1,d_h_R).transpose(1,2), ...).expand(B,nh,L,d_h_R)  # Eq. 15
+q = torch.cat([q_c, q_rope], dim=-1)   # Eq. 16: [B, nh, L, dh + d_h_R]
+k = torch.cat([k_c, k_rope], dim=-1)   # Eq. 17: [B, nh, L, dh + d_h_R]
+out = F.scaled_dot_product_attention(q, k, v, is_causal=True)  # Eq. 18
 ```
 
 ### Intentional deviations from DeepSeek-V2
 
 | Deviation | Reason |
 |-----------|--------|
-| No RMSNorm on c_t^{KV} or c_t^Q | Paper says "for training stability"; toy scale (d=512) does not exhibit the same bottleneck instability; adds parameters without benefit at this scale |
-| No decoupled RoPE (Eq. 14–19) | Decoupled RoPE enables the KV-cache absorption trick at inference — not the objective here. Standard RoPE applied to full K and Q heads. |
+| RMSNorm **included** on both c_t^{KV} and c_t^Q | Added April 2026. Empirical evidence (arXiv:2506.09342) showed MLA underperforms MHA without this. Now matches paper recommendation. |
+| Decoupled RoPE (Eq. 14–19) **included** | Added April 2026. Without decoupled RoPE, MLA degrades ~3% vs MHA even at zero compression (arXiv:2506.09342). k_rope is a single shared positional key broadcast to all heads. |
+| d_c = d//2 = 256 (not d//4) | Changed April 2026 from d//4=128. At d//4 with decoupled RoPE, still +4.4% worse than MHA (arXiv:2506.09342 Table 2); d//2 is near-parity (+0.3%). 2× compression vs paper's ~90× at DeepSeek-V2 scale. |
+| d_c' = d//2 = 256 (not 1536) | Scaled to toy dimensions |
+| d_h_R = d_h//2 = 32 (not 64) | Scaled to toy dimensions; DeepSeek-V2 uses d_h^R = 64 with d_h = 128 |
+| Separate `W_KR` instead of joint `wkv_a` output | Reference code uses a single `wkv_a: d → d_c + d_h_R` that outputs the KV latent and the RoPE key together, split afterward. Our implementation uses separate `W_DKV: d → d_c` and `W_KR: d → d_h_R`. Functionally equivalent; separate projections are clearer and avoid a non-standard split. |
 | No KV-cache absorption trick | Inference optimization only; not relevant during training |
-| d_c = d//4 = 128 (not 4·d_h) | Scaled to toy dimensions; DeepSeek-V2 uses d_c = 4·d_h = 512 in its much larger model |
-| d_c' = d//2 = 256 (not 1536) | Same; scaled to toy dimensions |
 | All projections are `nn.Linear` with `bias=False` | Matches reference code convention; no bias in attention projections |
 
 ---
 
 ## Verification checklist
 
-1. **KV shared latent**: Confirm `self.W_DKV` is a single linear `d → d_c` at line 50, and that
-   both `self.W_UK` (`d_c → n_heads*d_head`) at line 51 and `self.W_UV` at line 52 read from
-   the same `c_kv = self.W_DKV(x)` output at line 69. K and V do not have independent inputs.
+1. **KV shared latent with RMSNorm**: Confirm `self.kv_norm` is an `RMSNorm(d_c)` applied to
+   `self.W_DKV(x)` before W_UK/W_UV. Both K_C and V read from the same normed latent.
 
-2. **Q separate latent**: Confirm `self.W_DQ` is independent of `W_DKV` — a separate linear at
-   line 55. Q and KV latents are computed from the same input `x` but via different projections.
+2. **Q separate latent with RMSNorm**: Confirm `self.q_norm` is an `RMSNorm(d_c_q)` applied to
+   `self.W_DQ(x)`. Q latent is independent of KV latent.
 
-3. **d_c defaults**: Confirm `d_c = d // 4` at line 44 (= 128 at d=512) and `d_c_q = d // 2`
-   at line 46 (= 256 at d=512).
+3. **d_c defaults**: Confirm `d_c = d // 2` (= 256 at d=512) and `d_c_q = d // 2` (= 256 at d=512).
 
-4. **No shared parameters between K and V paths**: Confirm `W_UK` and `W_UV` are independent
-   `nn.Linear` instances at lines 51–52. They read from the same `c_kv` but apply different
-   weight matrices. K and V must not share weights.
+4. **Decoupled RoPE projections**: Confirm `self.W_QR` maps `d_c_q → n_heads * d_h_R` and
+   `self.W_KR` maps `d → d_h_R` where `d_h_R = d_head // 2` (= 32 at d=512).
 
-5. **RoPE on both Q and K**: Confirm `apply_rope` is called on both `q` and `k` at lines 77–78.
-   V is not rotated (standard attention convention).
+5. **Shared positional key broadcast**: Confirm `k_rope` is computed from `self.W_KR(x)` with
+   shape `[B, 1, L, d_h_R]` before `.expand(B, nh, L, d_h_R)` — a single shared key for all heads.
 
-6. **Output shape contract**: Confirm `out.transpose(1, 2).reshape(B, L, D)` at line 81 produces
-   shape `[B, L, D]` before the final linear. With `D = d = n_heads * d_head`, this is correct.
+6. **Content/positional concatenation**: Confirm `q = torch.cat([q_c, q_rope], dim=-1)` and
+   `k = torch.cat([k_c, k_rope], dim=-1)` produce head dim `dh + d_h_R = 96` at d=512.
 
-7. **No RMSNorm on latents**: Confirm there is no LayerNorm or RMSNorm applied to `c_kv` or
-   `c_q` in the forward pass. The reference applies norms at this bottleneck, but we intentionally
-   omit them (see deviations).
+7. **V not rotated**: Confirm `apply_rope` is NOT called on `v` — only on `q_rope` and `k_rope`.
+   Content keys K_C also have no RoPE.
 
-8. **Parameter count reduction**: With d=512, n_heads=8, d_head=64:
-   - Standard MHA: W_Q + W_K + W_V = 3 × 512² = 786,432 params
-   - MLA (our): W_DKV(512×128) + W_UK(128×512) + W_UV(128×512) + W_DQ(512×256) + W_UQ(256×512)
-     = 65,536 + 65,536 + 65,536 + 131,072 + 131,072 = 458,752 params  (~58% of MHA)
-   Verify by counting `MLACausalAttention` parameters in a shape check run.
+8. **Output shape contract**: SDPA outputs `[B, nh, L, dh]` (V's head dim), so
+   `out.transpose(1, 2).reshape(B, L, D)` produces `[B, L, D]` correctly since `D = nh * dh`.
+
+9. **RoPE buffer size**: Confirm `precompute_rope(self.d_h_R, max_len)` — buffers are sized for
+   `d_h_R` (32), not `d_head` (64). `apply_rope` splits by `d_half = shape[-1] // 2` internally.
+
+10. **No shared parameters between K and V paths**: Confirm `W_UK` and `W_UV` are independent
+    `nn.Linear` instances reading from the same `c_kv`.
+
+11. **Parameter count (April 2026)**: With d=512, n_heads=8, d_head=64, d_c=256, d_c_q=256, d_h_R=32:
+    - W_DKV(512×256) + kv_norm(256) + W_UK(256×512) + W_UV(256×512) = 131,072 + 256 + 131,072 + 131,072
+    - W_DQ(512×256) + q_norm(256) + W_UQ(256×512) = 131,072 + 256 + 131,072
+    - W_QR(256×256) + W_KR(512×32) = 65,536 + 16,384
+    - out(512×512) = 262,144
+    - Total attention params ≈ 1,000,192 (vs standard MHA 3×512²+512² = 1,048,576 — ~95% of MHA)
+    Verify by counting `MLACausalAttention` parameters in a shape check run.

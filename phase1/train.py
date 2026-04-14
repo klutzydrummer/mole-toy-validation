@@ -25,6 +25,7 @@ import torch.nn.functional as F
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from phase1.components.ngpt import normalize_ngpt_weights
 from phase1.model import ToyTransformer
 from utils.data import get_dataloader, get_vocab_size, set_dataset, set_tokenizer
 from utils.device import configure_sdpa, get_amp_config, get_device
@@ -144,16 +145,28 @@ def train(config: str, d: int = 512, n_layers: int = 8, n_heads: int = 8,
     train_loader = get_dataloader("train", seq_len=seq_len, batch_size=batch_size)
     val_loader = get_dataloader("val", seq_len=seq_len, batch_size=batch_size)
 
-    # Optimizer — two param groups: weight matrices get decay, 1D params do not.
-    # 1D params include biases, RMSNorm scales (nn.Parameter shape [d]), and any
-    # other 1D tensors. 2D+ matrices (Linear weights, embeddings) get decay.
-    decay_params   = [p for p in model.parameters() if p.requires_grad and p.ndim >= 2]
-    nodecay_params = [p for p in model.parameters() if p.requires_grad and p.ndim < 2]
-    optimizer = torch.optim.AdamW(
-        [{"params": decay_params, "weight_decay": 0.1},
-         {"params": nodecay_params, "weight_decay": 0.0}],
-        lr=max_lr, betas=(0.9, 0.95), fused=(device.type == "cuda"),
-    )
+    # Optimizer — param groups differ for nGPT vs standard configs.
+    #
+    # nGPT: no weight decay on any parameter. Weight decay conflicts with the
+    # post-step column normalization (arXiv:2410.01131, Section 2.6). Single group.
+    #
+    # Standard: two groups — weight matrices (2D+) get decay=0.1; 1D params
+    # (biases, RMSNorm scales, nn.Parameter vectors) get decay=0.0.
+    _model_raw = _unwrap(model)
+    if getattr(_model_raw, "use_ngpt", False):
+        optimizer = torch.optim.AdamW(
+            model.parameters(),
+            lr=max_lr, betas=(0.9, 0.95), weight_decay=0.0,
+            fused=(device.type == "cuda"),
+        )
+    else:
+        decay_params   = [p for p in model.parameters() if p.requires_grad and p.ndim >= 2]
+        nodecay_params = [p for p in model.parameters() if p.requires_grad and p.ndim < 2]
+        optimizer = torch.optim.AdamW(
+            [{"params": decay_params,   "weight_decay": 0.1},
+             {"params": nodecay_params, "weight_decay": 0.0}],
+            lr=max_lr, betas=(0.9, 0.95), fused=(device.type == "cuda"),
+        )
 
     # Resume — checkpoint names include seed so multi-seed runs don't overwrite each other.
     # e.g. baseline_seed42_latest.pt, baseline_seed42_best.pt
@@ -240,6 +253,12 @@ def train(config: str, d: int = 512, n_layers: int = 8, n_heads: int = 8,
             loss.backward()
             grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0).item()
             optimizer.step()
+
+        # nGPT: normalize all weight matrices row-wise after each optimizer step.
+        # Maintains the hyperspherical invariant: weight rows remain unit vectors,
+        # consistent with normalized hidden states (arXiv:2410.01131, Section 2.3).
+        if getattr(_unwrap(model), "use_ngpt", False):
+            normalize_ngpt_weights(_unwrap(model))
 
         log_loss_accum += loss.item()
         log_count += 1
@@ -375,7 +394,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Phase 1 Training")
     parser.add_argument("--config", type=str, default="baseline",
                         choices=["baseline", "baseline_wide", "mhc", "mol", "mol_single", "compose",
-                                 "mla", "diff_attn", "diff_mla"])
+                                 "mla", "diff_attn", "diff_mla",
+                                 "diff_mhc", "mla_mhc", "diff_mla_mhc",
+                                 "ngpt", "ngpt_mla", "ngpt_diff_attn"])
     parser.add_argument("--d", type=int, default=512)
     parser.add_argument("--n_layers", type=int, default=8)
     parser.add_argument("--n_heads", type=int, default=8)

@@ -10,7 +10,7 @@ Each file in this directory is a **verifiable component** — it corresponds to 
 | `attention_rope_norms.py` | `references/components/attention_rope_norms.md` | CausalSelfAttention |
 | `mla_attention.py` | `references/components/mla_attention.md` | MLACausalAttention |
 | `diff_attention.py` | `references/components/diff_attention.md` | DifferentialCausalAttention, DiffMLAAttention |
-| `mhc.py` | `references/components/mhc.md` | KromHCResidual, HyperConnection |
+| `mhc.py` | `references/components/mhc.md` | GoMHCResidual, HyperConnection |
 | `mol_ffn.py` | `references/components/mol_ffn.md` | LoRAAdapter, SingleLoRAFFN, MoLFFN |
 | `transformer_block.py` | (wiring only — no spec) | TransformerBlock |
 

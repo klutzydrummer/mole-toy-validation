@@ -7,6 +7,10 @@ the stream-mixing matrix is constrained to the Birkhoff polytope (doubly stochas
 the identity-mapping property of standard residuals while allowing richer cross-stream information
 flow.
 
+H_res is implemented via **go-mHC** (arXiv:2604.02309): input-conditional, exactly doubly
+stochastic via Cayley transform + block Frobenius projection. Replaced static KromHC
+(arXiv:2601.21579) in April 2026.
+
 ---
 
 ## Sources
@@ -23,6 +27,11 @@ flow.
   Hyper-Connections with Kronecker-Product Residual Matrices", arXiv:2601.21579, January 2026.
   Achieves exact doubly stochasticity at O(n²C) parameter complexity via Kronecker factorization.
   Best downstream accuracy and lowest gradient norms among all HC variants.
+  **Superseded in this implementation by go-mHC (April 2026).**
+- **Follow-up:** `sources/papers/go_mhc_2604.02309.md` (to be added) — "go-mHC: Generalized
+  Orthostochastic Hyper-Connections", arXiv:2604.02309, April 2026. Input-conditional H_res via
+  Cayley transform + block Frobenius projection. Exactly doubly stochastic for any n. s=2
+  recommended. No separate optimizer group required. **Current implementation.**
 
 ---
 
@@ -150,20 +159,35 @@ residuals = self.depth_residual_fn(output, residuals)
 
 ## Our implementation
 
-**File:** `phase1/components/mhc.py` (KromHCResidual, HyperConnection);
+**File:** `phase1/components/mhc.py` (GoMHCResidual, HyperConnection);
 `phase1/components/transformer_block.py` (TransformerBlock._forward_mhc);
 `phase1/model.py` (ToyTransformer stream expand/collapse)
 
 | Symbol | Location |
 |--------|----------|
-| `KromHCResidual` | `phase1/components/mhc.py:31` |
-| `HyperConnection.__init__` | `phase1/components/mhc.py:89` |
-| `HyperConnection.forward` | `phase1/components/mhc.py:110` |
-| `TransformerBlock._forward_mhc` | `phase1/components/transformer_block.py:68` |
+| `GoMHCResidual` | `phase1/components/mhc.py:37` |
+| `HyperConnection.__init__` | `phase1/components/mhc.py:145` |
+| `HyperConnection.forward` | `phase1/components/mhc.py:165` |
+| `TransformerBlock._forward_mhc` | `phase1/components/transformer_block.py:78` |
 | Stream expansion (embed → [B,L,n,d]) | `phase1/model.py:124` |
 | Stream collapse (learned weighted sum) | `phase1/model.py:130` |
 
-**Note:** Line numbers shift when the model is edited. Use `grep -n "class KromHCResidual"` etc. to locate current positions.
+**Note:** Line numbers shift when the model is edited. Use `grep -n "class GoMHCResidual"` etc. to locate current positions.
+
+### go-mHC construction (H_res, arXiv:2604.02309 Section 3.3)
+
+Per forward call:
+
+```python
+x_agg = streams.mean(dim=2)                           # [B, L, d]
+z     = W_res(x_agg)                                  # [B, L, ns*(ns-1)//2]
+A     = skew(z)                                        # [B, L, ns, ns] skew-symmetric
+Q     = linalg.solve(I + A, I - A)                    # [B, L, ns, ns] ∈ SO(ns)
+H_res[i,j] = (1/s) * ||Q[i*s:(i+1)*s, j*s:(j+1)*s]||²_F  # [B, L, n, n]
+```
+
+Init: `W_res.weight=0, W_res.bias=0` → `A=0` → `Q=I` → `H_res=I_n` at start.
+`ns = n * s` (default s=2, so ns=8 for n=4).
 
 ### Intentional deviations from the paper (matching reference code or later papers)
 
@@ -177,18 +201,15 @@ residuals = self.depth_residual_fn(output, residuals)
    (`num_input_views=1`). Our `HyperConnection` always uses single-view, so these are stored
    as `[n]` tensors. Functionally equivalent.
 
-3. **KromHC (arXiv:2601.21579) replaces Sinkhorn-Knopp for H_res.**
-   Paper Eq. 9 uses iterative SK (t_max=20). mHC-lite (arXiv:2601.05732) and KromHC both
-   demonstrate that SK leaves up to 100% column-sum deviation per layer. Our implementation
-   uses **KromHC** with n=4=2×2 Kronecker factorization:
-   - Two 2×2 factor matrices: `U_k = a_k·I + (1-a_k)·Swap`, `a_k = softmax(logits)[0]`
-   - `H_res = U1 ⊗ U2` via `torch.kron` — exactly doubly stochastic by Theorem 4.2
-   - Initialization: `factor_logits = [0, -8]` → `a≈1` → `U≈I` → `H_res ≈ I_4`
-   - No iterations, no approximation error
-
-4. **Dynamic variant (DHC) removed.**
-   The original implementation supported `dynamic=True` (input-conditional H_res via Sinkhorn).
-   KromHC is static-only. The `mhc_dynamic` CLI flag is accepted but ignored.
+3. **go-mHC (arXiv:2604.02309) replaces KromHC for H_res (April 2026).**
+   KromHC was static (input-independent) and limited to n=4. go-mHC is input-conditional and
+   works for any n. The Cayley transform + block Frobenius construction guarantees exact doubly
+   stochasticity without any iterations:
+   - `A = skew(W_res(mean(streams)))` — input-dependent skew-symmetric matrix
+   - `Q = (I+A)^{-1}(I-A)` — Cayley transform → special orthogonal group SO(ns)
+   - `H_res[i,j] = (1/s)||Q_block[i,j]||²_F` — block Frobenius → exactly doubly stochastic
+   - s=2 (recommended by paper); ns = n*s = 8 for n=4
+   - No separate optimizer group needed — paper uses standard Adam for all parameters
 
 5. **Stream collapse uses learned softmax weights, not a fixed operation.**
    After all blocks, streams are collapsed via:
@@ -316,8 +337,7 @@ Achieves best downstream accuracy and lowest gradient norms among all HC variant
    un-normalized stream participates in H_res mixing. This matches the paper's structure where
    F() operates on the pre-processed branch input, not the raw stream.
 
-10. **KromHC replaces Sinkhorn — NOT APPLICABLE:** Deviation 3 documents that `sinkhorn_log`
-    was fully replaced by `KromHCResidual` (Kronecker product factorization of H_res into two
-    2×2 doubly-stochastic factors). Confirm `KromHCResidual` is present at `phase1/components/mhc.py:31`
-    and that no call to `sinkhorn_log` exists in the file. The τ=0.05 / n_iters=10 check
-    against the reference code is superseded by this architectural change.
+10. **go-mHC replaces KromHC (April 2026):** Confirm `GoMHCResidual` is present at
+    `phase1/components/mhc.py:37` and that no reference to `KromHCResidual` or `sinkhorn_log`
+    exists in the file. Confirm `HyperConnection` uses `self.go_res = GoMHCResidual(n, d, s=2)`.
+    Confirm `W_res` weight and bias are zero-initialized (identity H_res at start).

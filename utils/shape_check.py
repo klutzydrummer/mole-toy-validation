@@ -58,6 +58,14 @@ def check_phase1():
         ("mla",           {}),
         ("diff_attn",     {}),
         ("diff_mla",      {}),
+        # go-mHC compositions
+        ("diff_mhc",      {}),
+        ("mla_mhc",       {}),
+        ("diff_mla_mhc",  {}),
+        # nGPT hypersphere experiments
+        ("ngpt",           {}),
+        ("ngpt_mla",       {}),
+        ("ngpt_diff_attn", {}),
     ]
 
     results = []

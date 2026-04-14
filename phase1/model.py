@@ -6,7 +6,7 @@ Mathematical implementations live in phase1/components/:
   attention_rope_norms.py CausalSelfAttention
   mla_attention.py        MLACausalAttention
   diff_attention.py       DifferentialCausalAttention, DiffMLAAttention
-  mhc.py                  KromHCResidual, HyperConnection
+  mhc.py                  GoMHCResidual, HyperConnection
   mol_ffn.py              LoRAAdapter, SingleLoRAFFN, MoLFFN
   transformer_block.py    TransformerBlock
 
@@ -28,9 +28,16 @@ from phase1.components.diff_attention import (  # noqa: F401
     DifferentialCausalAttention,
     DiffMLAAttention,
 )
-from phase1.components.mhc import HyperConnection, KromHCResidual  # noqa: F401
+from phase1.components.mhc import GoMHCResidual, HyperConnection  # noqa: F401
 from phase1.components.mla_attention import MLACausalAttention  # noqa: F401
 from phase1.components.mol_ffn import LoRAAdapter, MoLFFN, SingleLoRAFFN  # noqa: F401
+from phase1.components.ngpt import (  # noqa: F401
+    NGPTCausalAttention,
+    NGPTDiffCausalAttention,
+    NGPTMLACausalAttention,
+    l2_norm,
+    normalize_ngpt_weights,
+)
 from phase1.components.transformer_block import TransformerBlock  # noqa: F401
 
 # ============================================================
@@ -52,6 +59,14 @@ class ToyTransformer(nn.Module):
         "diff_attn":      dict(use_mhc=False, use_mol=False, use_single_lora=False, use_mla=False, use_diff_attn=True,  use_diff_mla=False, n_streams=1),
         # Diff Attention + MLA KV compression (novel composition, no published precedent)
         "diff_mla":       dict(use_mhc=False, use_mol=False, use_single_lora=False, use_mla=False, use_diff_attn=False, use_diff_mla=True,  n_streams=1),
+        # go-mHC compositions — Phase 1 composition roadmap (April 2026)
+        "diff_mhc":       dict(use_mhc=True,  use_mol=False, use_single_lora=False, use_mla=False, use_diff_attn=True,  use_diff_mla=False, n_streams=4),
+        "mla_mhc":        dict(use_mhc=True,  use_mol=False, use_single_lora=False, use_mla=True,  use_diff_attn=False, use_diff_mla=False, n_streams=4),
+        "diff_mla_mhc":   dict(use_mhc=True,  use_mol=False, use_single_lora=False, use_mla=False, use_diff_attn=False, use_diff_mla=True,  n_streams=4),
+        # nGPT hypersphere experiments (April 2026, arXiv:2410.01131)
+        "ngpt":           dict(use_mhc=False, use_mol=False, use_single_lora=False, use_mla=False, use_diff_attn=False, use_diff_mla=False, use_ngpt=True,  n_streams=1),
+        "ngpt_mla":       dict(use_mhc=False, use_mol=False, use_single_lora=False, use_mla=True,  use_diff_attn=False, use_diff_mla=False, use_ngpt=True,  n_streams=1),
+        "ngpt_diff_attn": dict(use_mhc=False, use_mol=False, use_single_lora=False, use_mla=False, use_diff_attn=True,  use_diff_mla=False, use_ngpt=True,  n_streams=1),
     }
 
     def __init__(self, config: str = "baseline", d: int = 256, n_layers: int = 8,
@@ -63,6 +78,7 @@ class ToyTransformer(nn.Module):
         cfg = self.CONFIGS[config]
         self.config_name = config
         self.use_mhc = cfg["use_mhc"]
+        self.use_ngpt = cfg.get("use_ngpt", False)
         self.n_streams = cfg["n_streams"]
         self.d = d
 
@@ -76,6 +92,7 @@ class ToyTransformer(nn.Module):
                 use_mla=cfg["use_mla"],
                 use_diff_attn=cfg["use_diff_attn"],
                 use_diff_mla=cfg["use_diff_mla"],
+                use_ngpt=self.use_ngpt,
                 n_experts=n_experts,
                 mol_rank=mol_rank, mol_top_k=mol_top_k,
                 d_ff=d_ff,
@@ -92,6 +109,12 @@ class ToyTransformer(nn.Module):
         # Stream collapse: softmax-normalized learned weights (Section 5.4)
         if self.use_mhc and self.n_streams > 1:
             self.stream_collapse_logits = nn.Parameter(torch.zeros(self.n_streams))
+
+        # nGPT logit scale s_z: hidden states are unit-norm so logits are raw cosine
+        # similarities. s_z (init √d ≈ 22.6) rescales to a useful softmax temperature.
+        # Reference: arXiv:2410.01131, Section 2.5.
+        if self.use_ngpt:
+            self.ngpt_s_z = nn.Parameter(torch.tensor(math.sqrt(d)))
 
         self.apply(self._init_weights)
 
@@ -119,6 +142,13 @@ class ToyTransformer(nn.Module):
         """x: [B, L] -> [B, L, vocab_size]"""
         h = self.embed(x)
 
+        # nGPT: embed outputs land on the hypersphere from the first block onward.
+        # normalize_ngpt_weights keeps embed.weight unit-normed after each optimizer step,
+        # but we normalize the lookup result here to handle the first forward pass and
+        # any residual floating-point drift.
+        if self.use_ngpt:
+            h = l2_norm(h)
+
         if self.use_mhc and self.n_streams > 1:
             # Expand to n streams — identical at start, will diverge via H_post
             h = h.unsqueeze(2).expand(-1, -1, self.n_streams, -1).clone()
@@ -131,7 +161,12 @@ class ToyTransformer(nn.Module):
             h = torch.einsum("blnd, n -> bld", h, w)
 
         h = self.norm_out(h)
-        return self.lm_head(h)
+        logits = self.lm_head(h)
+        # nGPT: logits are cosine similarities (in [−1, 1]); scale by s_z to restore
+        # a useful softmax temperature. s_z is learnable, init √d ≈ 22.6.
+        if self.use_ngpt:
+            logits = logits * self.ngpt_s_z
+        return logits
 
     def get_mol_stats(self):
         stats = []
