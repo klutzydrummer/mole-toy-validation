@@ -1,13 +1,25 @@
 #!/bin/bash
-# Run all MoLE toy validation experiments in sequence.
-# Covers Phase 1 (9 configs), Phase 1 scaling study, and Phase 2 (10 outer encoder configs).
+# Run MoLE toy validation experiments.
+# 17 Phase 1 configs (5 study groups) + Phase 1 scaling study + 10 Phase 2 configs.
 # Every config auto-resumes from checkpoint if interrupted.
+#
+# Study groups (see STUDY_DESIGN.md for research questions):
+#   Study A — MoLE core     (Q1, Q2):  baseline baseline_wide mol mol_single mhc compose
+#   Study B — Attention     (Q4, Q5):  mla diff_attn diff_mla
+#   Study C — mHC compose   (Q6):      diff_mhc mla_mhc diff_mla_mhc
+#   Study D — nGPT          (Q7):      ngpt ngpt_mla ngpt_diff_attn
+#   Study E — Multi-sphere  (Q8):      ngpt_mhc_a ngpt_mhc_c
 #
 # Usage:
 #   bash run_experiments.sh                      # run everything (default)
-#   bash run_experiments.sh phase1               # Phase 1 only (9 configs, d=512)
+#   bash run_experiments.sh phase1               # all Phase 1 (17 configs, d=512)
 #   bash run_experiments.sh phase1_scaling       # scaling study: 5 configs × d=256,768
-#   bash run_experiments.sh phase2               # Phase 2 only (all 10 outer configs)
+#   bash run_experiments.sh phase2               # Phase 2 only (10 outer encoder configs)
+#   bash run_experiments.sh study_mole           # Study A: MoLE core (Q1, Q2)
+#   bash run_experiments.sh study_attention      # Study B: attention variants (Q4, Q5)
+#   bash run_experiments.sh study_mhc_compose    # Study C: go-mHC compositions (Q6)
+#   bash run_experiments.sh study_ngpt           # Study D: nGPT hyperspherical (Q7)
+#   bash run_experiments.sh study_sphere         # Study E: multi-sphere compositions (Q8)
 #   bash run_experiments.sh baseline             # single Phase 1 config
 #   bash run_experiments.sh outer_crl            # single Phase 2 config
 #   bash run_experiments.sh phase2 --shutdown    # shutdown instance when done
@@ -16,7 +28,7 @@
 # then learned routing, then full-width CRL, then transformer variants, then ablations.
 #
 # On Lightning.ai free tier (T4):
-#   Phase 1: ~4-5 hours total (4 configs × ~45-75 min)
+#   Phase 1 (all 17): ~14-17 hours (~45-75 min per config)
 #   Phase 2: ~10-15 hours total (10 configs × ~60-90 min)
 #   Session interrupted? Re-run the same command — all configs auto-resume.
 
@@ -383,6 +395,43 @@ case "$TARGET" in
     run_phase1_scale mol        768 12
     ;;
 
+  # Study A — MoLE core (Q1, Q2)
+  study_mole)
+    run_phase1 baseline
+    run_phase1 baseline_wide
+    run_phase1 mol
+    run_phase1 mol_single
+    run_phase1 mhc
+    run_phase1 compose
+    ;;
+
+  # Study B — Attention variants (Q4, Q5)
+  study_attention)
+    run_phase1 mla
+    run_phase1 diff_attn
+    run_phase1 diff_mla
+    ;;
+
+  # Study C — go-mHC compositions (Q6)
+  study_mhc_compose)
+    run_phase1 diff_mhc
+    run_phase1 mla_mhc
+    run_phase1 diff_mla_mhc
+    ;;
+
+  # Study D — nGPT hyperspherical (Q7)
+  study_ngpt)
+    run_phase1 ngpt
+    run_phase1 ngpt_mla
+    run_phase1 ngpt_diff_attn
+    ;;
+
+  # Study E — multi-sphere compositions (Q8)
+  study_sphere)
+    run_phase1 ngpt_mhc_a
+    run_phase1 ngpt_mhc_c
+    ;;
+
   # Individual Phase 1 configs
   baseline | mhc | mol | compose | mla | diff_attn | diff_mla | \
   diff_mhc | mla_mhc | diff_mla_mhc | \
@@ -409,17 +458,32 @@ case "$TARGET" in
 
   *)
     echo "ERROR: Unknown target '$TARGET'"
-    echo "Usage: bash run_experiments.sh [all|phase1|phase2|<config>]"
-    echo "Phase 1 configs: baseline baseline_wide mhc mol mol_single compose mla diff_attn diff_mla"
-    echo "                 diff_mhc mla_mhc diff_mla_mhc"
-    echo "                 ngpt ngpt_mla ngpt_diff_attn"
-echo "                 ngpt_mhc_a ngpt_mhc_c"
-    echo "Scaling study:   bash run_experiments.sh phase1_scaling"
-    echo "                 (runs baseline mla diff_attn diff_mla mol at d=256 and d=768)"
-    echo "Phase 2 configs: outer_crl outer_crl_learned"
-    echo "                 outer_crl_full outer_crl_full_learned"
-    echo "                 outer_transformer outer_diff_attn outer_mla"
-    echo "                 outer_strided outer_crl_learned_noste outer_crl_fixed_stride"
+    echo "Usage: bash run_experiments.sh [TARGET] [--shutdown]"
+    echo ""
+    echo "Bulk targets:"
+    echo "  all                run all Phase 1 + Phase 2"
+    echo "  phase1             all 17 Phase 1 configs (d=512)"
+    echo "  phase1_scaling     5 configs × d=256,768"
+    echo "  phase2             all 10 Phase 2 configs"
+    echo ""
+    echo "Study group targets (see STUDY_DESIGN.md):"
+    echo "  study_mole         Study A: baseline baseline_wide mol mol_single mhc compose"
+    echo "  study_attention    Study B: mla diff_attn diff_mla"
+    echo "  study_mhc_compose  Study C: diff_mhc mla_mhc diff_mla_mhc"
+    echo "  study_ngpt         Study D: ngpt ngpt_mla ngpt_diff_attn"
+    echo "  study_sphere       Study E: ngpt_mhc_a ngpt_mhc_c"
+    echo ""
+    echo "Individual Phase 1 configs:"
+    echo "  baseline baseline_wide mhc mol mol_single compose"
+    echo "  mla diff_attn diff_mla"
+    echo "  diff_mhc mla_mhc diff_mla_mhc"
+    echo "  ngpt ngpt_mla ngpt_diff_attn"
+    echo "  ngpt_mhc_a ngpt_mhc_c"
+    echo ""
+    echo "Individual Phase 2 configs:"
+    echo "  outer_crl outer_crl_learned outer_crl_full outer_crl_full_learned"
+    echo "  outer_transformer outer_diff_attn outer_mla"
+    echo "  outer_strided outer_crl_learned_noste outer_crl_fixed_stride"
     exit 1
     ;;
 esac

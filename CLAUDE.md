@@ -6,10 +6,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Phase 1 toy validation of the MoLE architecture (Mixture-of-LoRAs Encoder) on WikiText-103 (BPE, vocab=4096). Phase 2 (HDC) wraps the mol inner network with Zone E and Zone D for content-aware compression.
 
-**Phase 1 configs (9 total, d=512 ~28M params):**
-- Core: `baseline`, `mhc`, `mol`, `compose`
-- Attention variants: `mla` (MLA KV compression, arXiv:2405.04434), `diff_attn` (Diff Attn V2, Jan 2026), `diff_mla` (novel Diff V2 + MLA composition)
-- Ablations: `baseline_wide` (widened FFN, param-matched to mol for Q1 fair comparison), `mol_single` (rank=72, exact capacity-matched single LoRA, no routing, for Q2)
+**Phase 1 configs (17 total across 5 study groups, d=512 ~28M params):**
+
+| Study | Configs | Research question |
+|-------|---------|------------------|
+| A — MoLE core | `baseline`, `baseline_wide`, `mol`, `mol_single`, `mhc`, `compose` | Q1: routing vs. capacity; Q2: routing vs. high-rank adapter |
+| B — Attention | `mla`, `diff_attn`, `diff_mla` | Q4: diff attn quality; Q5: MLA KV compression cost |
+| C — mHC compose | `diff_mhc`, `mla_mhc`, `diff_mla_mhc` | Q6: mHC + attention variant compositions |
+| D — nGPT | `ngpt`, `ngpt_mla`, `ngpt_diff_attn` | Q7: hyperspherical constraint benefit |
+| E — Multi-sphere | `ngpt_mhc_a`, `ngpt_mhc_c` | Q8: multi-sphere vs. wrap-sublayer mHC |
+
+Use `bash run_experiments.sh study_<name>` to run a single study group (e.g. `study_ngpt`).
+See `STUDY_DESIGN.md` for research questions, controls, and execution order.
 
 **Phase 1 scaling study (10 configs: 5 × d=256, 5 × d=768):**
 - Configs: `baseline`, `mla`, `diff_attn`, `diff_mla`, `mol` at d=256 (n_heads=4, ~6M) and d=768 (n_heads=12, ~58M)
@@ -41,7 +49,7 @@ nix-shell --run "ruff check ."                  # lint
 `shell.nix` provides CPU-only torch + torchinfo + ruff. A single forward pass at full production dims (d=512, seq=256, batch=1) costs ~200 MB RAM — safe to run locally.
 
 `shape_check.py` validates:
-- Output shape contracts for all 29 non-upcycle configs (9 Phase 1 + 10 scaling + 10 Phase 2)
+- Output shape contracts for all 37 configs (17 Phase 1 + 10 scaling + 10 Phase 2)
 - No NaN/Inf in logits
 - boundary_probs in [0, 1] for all Phase 2 configs
 
@@ -51,7 +59,7 @@ nix-shell --run "ruff check ."                  # lint
 
 ```bash
 bash run_experiments.sh                               # run all configs (Phase 1 + Phase 2)
-bash run_experiments.sh phase1                        # Phase 1 only (9 configs, d=512)
+bash run_experiments.sh phase1                        # Phase 1 only (17 configs, d=512)
 bash run_experiments.sh phase1_scaling                # scaling study (5 configs × d=256, d=768)
 bash run_experiments.sh phase2                        # Phase 2 only (10 outer encoder configs)
 bash run_experiments.sh baseline                      # single Phase 1 config

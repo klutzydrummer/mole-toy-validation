@@ -2,7 +2,7 @@
 Shape validation — single forward pass of every model config on CPU.
 
 Checks:
-  - Phase 1 (9 configs) at d=512, seq=256, batch=1
+  - Phase 1 (17 configs across 5 study groups) at d=512, seq=256, batch=1
   - Phase 1 scaling (10 configs: baseline/mla/diff_attn/diff_mla/mol at d=256 and d=768)
   - Phase 2 (10 configs) at d=512
 
@@ -111,8 +111,8 @@ def check_phase1():
             results.append((name, False, str(e)))
 
     # Q1 fairness check: baseline_wide must be within 5% of mol total param count.
-    # d_ff=1600 is an approximation — STUDY_DESIGN.md documents the derivation as
-    # "approximately d_ff ≈ 1600". Actual gap at d=512 is ~3.2% (acceptable per study design).
+    # Verified at d=512: baseline_wide=30,155,264 vs mol=31,146,496 — gap is 991,232 (3.2%).
+    # baseline_wide has fewer params than mol, making Q1 conservative (see STUDY_DESIGN.md §2).
     # This check catches gross misconfigurations (e.g., accidentally using default d_ff=1408).
     if "mol" in param_counts and "baseline_wide" in param_counts:
         mol_p = param_counts["mol"]

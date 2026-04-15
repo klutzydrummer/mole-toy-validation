@@ -6,15 +6,55 @@ addition or change to training procedure should be evaluated against this docume
 
 ---
 
-## 1. The Three Questions
+## 1. Research Questions
 
-This study asks three separable questions. Each requires different controls.
+The project is organized into seven research questions across five study groups. Q1–Q3 were
+the original study design. Q4–Q7 were added as the project scope expanded in April 2026.
+
+### Core MoLE study (Q1–Q2): Study A
 
 | Question | Axis | Primary comparison |
 |----------|------|--------------------|
 | **Q1 — Does MoL's routing mechanism help, beyond just having more parameters?** | Total trainable params | `mol` vs. `baseline_wide` (matched total params) |
 | **Q2 — Is routing over adapters better than a single high-rank adapter?** | Total LoRA params | `mol` vs. `mol_single` (same total LoRA params, no routing) |
+
+### Outer encoder study (Q3): Study F (Phase 2)
+
+| Question | Axis | Primary comparison |
+|----------|------|--------------------|
 | **Q3 — Does content-aware compression improve over fixed-stride compression?** | Active FLOPs + training steps | `outer_crl_learned` vs. `outer_strided` (same steps, same target compression ratio) |
+
+### Attention variant study (Q4–Q5): Study B
+
+| Question | Axis | Primary comparison |
+|----------|------|--------------------|
+| **Q4 — Does differential attention improve over baseline?** | Attention mechanism | `diff_attn` vs. `baseline` (capacity confound: +25% attn params) |
+| **Q5 — Does MLA KV compression hurt at this scale?** | KV bottleneck dimension | `mla` vs. `baseline`; `diff_mla` vs. `diff_attn` |
+
+**Known results (seed42):** diff_attn best (3.5131 BPC, –0.047 over baseline); mla worst (3.5859 BPC, +0.025 over baseline). Q4 result is not a controlled comparison — doubled Q heads add ~25% more attention parameters. Q5: KV compression at d_c=128 (25% of d) is too lossy at this scale.
+
+### go-mHC composition study (Q6): Study C
+
+| Question | Axis | Primary comparison |
+|----------|------|--------------------|
+| **Q6 — Does mHC stream mixing improve when combined with specialized attention?** | Attention × stream topology | `diff_mhc` vs. `diff_attn`; `mla_mhc` vs. `mla`; `diff_mla_mhc` vs. `diff_mla` |
+
+**Context:** mHC alone shows rising grad norm (0.80→1.37 over 100k steps). Study C tests whether the grad norm issue is specific to the baseline attention or is architectural. The three attention variants give a gradient topology landscape for mHC.
+
+### nGPT hyperspherical study (Q7–Q8): Study D + Study E
+
+| Question | Axis | Primary comparison |
+|----------|------|--------------------|
+| **Q7 — Does hyperspherical constraint improve convergence/BPC?** | Normalization topology | `ngpt` vs. `baseline`; `ngpt_mla` vs. `mla`; `ngpt_diff_attn` vs. `diff_attn` |
+| **Q8 — Does multi-sphere stream mixing outperform wrap-sublayer composition?** | Geometric inductive bias | `ngpt_mhc_a` vs. `ngpt_mhc_c` (same params, different manifold structure) |
+
+**Q7 context:** nGPT constrains hidden states to S^{d-1}. Prior work reports 4–20× convergence
+speedup on language modeling (nGPT paper, arXiv:2410.01131) — but these are step counts, not
+wall-clock time, and the speedup may not hold at all scales or tokenizations.
+
+**Q8 context:** Two novel compositions, same 28M params, different geometric structure:
+- `ngpt_mhc_a` (Option A): n=4 streams each on S^{d-1}; go-mHC mixing preserves multi-sphere
+- `ngpt_mhc_c` (Option C): full mHC block treated as single sublayer; sphere enforced once
 
 Q1 and Q2 are Phase 1 questions. Q3 is the Phase 2 A1 question.
 The original Phase 1 comparison (mol vs. baseline at different total param counts) does not
@@ -32,12 +72,16 @@ The current baseline has **27.8M total params** — 3.35M fewer.
 A fair test of whether the MoL *architecture* (routing + specialization) adds value beyond
 raw capacity requires a dense baseline with the same total parameter count.
 
-**`baseline_wide`**: SwiGLU with d_ff scaled up to match MoL's total params.
+**`baseline_wide`**: SwiGLU with d_ff=1600 (vs. default 1408).
 
-To compute the target d_ff: MoL adds 3 LoRA sets × 9 experts × (d_in×r + r×d_out) × 8 layers
-over the base SwiGLU. Solving for a SwiGLU that adds the same number of params by increasing
-d_ff gives approximately d_ff ≈ 1600 (vs. current 1408). Verify empirically that
-`baseline_wide` hits ~31.1M before training.
+Verified param counts (from `utils/shape_check.py`):
+- `baseline_wide`: **30,155,264** (30.2M)
+- `mol`:           **31,146,496** (31.1M)
+- Gap: 991,232 params, **3.2%** — within the 5% Q1 tolerance.
+
+Note: baseline_wide has slightly *fewer* params than mol. This makes Q1 conservative:
+if baseline_wide beats mol, capacity explains the gain; if mol wins, the routing benefit
+is understated (mol had the capacity disadvantage).
 
 ### Q2: Routing vs. high-rank single adapter
 
@@ -84,9 +128,9 @@ For transparency, the following should be computed and reported for every config
 | Config | Total params | Active params/token | Approx. FFN FLOPs/token |
 |--------|-------------|--------------------|-----------------------|
 | `baseline` | 27.8M | 27.8M | 2 × d × d_ff = 1.44M |
-| `baseline_wide` | ~31.1M | ~31.1M | ~1.60M |
+| `baseline_wide` | 30.2M | 30.2M | ~1.56M |
 | `mol` | 31.1M | ~28.9M* | ~1.50M* |
-| `mol_single` | ~31.1M | ~31.1M | ~1.48M* |
+| `mol_single` | 31.1M | 31.1M | ~1.48M* |
 | `mhc` | 27.8M | 27.8M | same as baseline |
 | `compose` | 31.1M | ~28.9M | ~1.50M |
 
@@ -102,35 +146,63 @@ than Q3 (FLOPs control) for interpreting MoL's result.
 
 ## 4. Required Configs
 
-### Phase 1 — full set
+### Study A — MoLE core (Q1, Q2)
 
-| Config | Purpose | Status |
-|--------|---------|--------|
-| `baseline` | Dense SwiGLU reference (27.8M) | Run complete — **rerun at 3 seeds** |
-| `baseline_wide` | Capacity-matched dense baseline (31.1M) | **New — must add** |
-| `mol` | MoL routing (31.1M, top-2 of 8) | Run complete — **rerun at 3 seeds** |
-| `mol_single` | Single rank-64 LoRA, no routing (31.1M) | **New — must add** |
-| `mhc` | Hyper-connections on baseline (27.8M) | Run complete — diagnose grad norm first |
-| `compose` | mHC + MoL (31.1M) | Run complete — interpret after mHC diagnosed |
+| Config | Purpose | Notes |
+|--------|---------|-------|
+| `baseline` | Dense SwiGLU reference (27.8M) | seed42 complete |
+| `baseline_wide` | Capacity-matched dense baseline (31.1M) | seed42 complete; 3-seed required for Q1 claim |
+| `mol` | MoL routing (31.1M, top-2 of 8) | seed42 complete; 3-seed required for Q1/Q2 |
+| `mol_single` | Single rank-72 LoRA, no routing (31.1M) | seed42 complete; 3-seed required for Q2 |
+| `mhc` | Hyper-connections on baseline (27.8M) | seed42 complete; grad norm rising — diagnose before 3-seed |
+| `compose` | mHC + MoL (31.1M) | seed42 complete; blocked on mHC diagnosis |
 
-### Phase 1 — configs that can be dropped for now
+### Study B — Attention variants (Q4, Q5)
 
-`mhc` and `compose` have known issues (rising grad norm, optimization instability). Until
-the mHC diagnostic runs (`--max_lr 1.5e-4` and `7.5e-5`) are complete, do not re-run these
-at 3 seeds. They are not required for the Q1/Q2 questions.
+| Config | Purpose | Notes |
+|--------|---------|-------|
+| `mla` | MLA KV compression (27.8M, d_c=128) | seed42 complete |
+| `diff_attn` | Differential attention V2 (capacity confound: +25% attn params) | seed42 complete |
+| `diff_mla` | DiffMLA V2 + MLA composition (novel) | seed42 complete |
 
-### Phase 2 — outer encoder study
+### Study C — go-mHC compositions (Q6)
 
-The Phase 2 config set is structured around Q3. 10 configs (OuterModel.CONFIGS).
+| Config | Purpose | Notes |
+|--------|---------|-------|
+| `diff_mhc` | go-mHC + Diff Attn V2 | pending |
+| `mla_mhc` | go-mHC + MLA | pending |
+| `diff_mla_mhc` | go-mHC + DiffMLA | pending |
+
+### Study D — nGPT hyperspherical (Q7)
+
+| Config | Purpose | Notes |
+|--------|---------|-------|
+| `ngpt` | nGPT on baseline (hyperspherical constraint) | pending |
+| `ngpt_mla` | nGPT + MLA | pending |
+| `ngpt_diff_attn` | nGPT + Diff Attn V2 | pending |
+
+### Study E — Multi-sphere compositions (Q8)
+
+| Config | Purpose | Notes |
+|--------|---------|-------|
+| `ngpt_mhc_a` | Multi-sphere (Option A): n=4 streams, each on S^{d-1} | pending |
+| `ngpt_mhc_c` | Wrap-sublayer (Option C): sphere enforced once after full mHC | pending |
+
+### Scaling study (cross-cutting)
+
+5 configs × {d=256, d=768}: `baseline`, `mla`, `diff_attn`, `diff_mla`, `mol`.
+Checkpoint prefix: `{cfg}_d{d}_seed42`. Goal: determine whether MLA's Q5 deficit is
+ratio-driven or absolute-dimension-driven.
+
+**MLA scaling caveat:** d_c/d=25% is held constant at all scales. At d=256, d_c=64;
+at d=512, d_c=128; at d=768, d_c=192. Both ratio and absolute bottleneck size vary
+proportionally with d — cannot independently isolate the two effects.
+
+### Phase 2 — outer encoder study (Q3)
+
 The Q3 controlled comparison is `outer_crl_learned` vs. `outer_crl_fixed_stride` (same
 encoder, different routing). `outer_strided` is a secondary no-encoder lower bound.
-
-**Note:** The MLA scaling study (§7, if added) cannot independently isolate ratio vs.
-absolute dimension effects because d_c/d=25% is held constant at all scales. At d=256,
-d_c=64; at d=512, d_c=128; at d=768, d_c=192. Both the ratio and the absolute bottleneck
-size vary proportionally with d. To isolate these effects requires running `mla` at d=512
-with a non-default d_c (e.g., d_c=64 to hold absolute dimension constant). This run is
-not currently scheduled but is needed before any scaling claim about MLA can be made.
+10 configs total (see phase2/model.py CONFIGS).
 
 ---
 
@@ -221,19 +293,43 @@ give mHC a silent advantage.
 
 ## 9. Execution Order
 
-```
-Phase 1 (revised):
-  1. baseline        × 3 seeds   (rerun — establishes variance baseline)
-  2. baseline_wide   × 3 seeds   (new — Q1 capacity control)
-  3. mol             × 3 seeds   (rerun — Q1 and Q2 treatment)
-  4. mol_single      × 3 seeds   (new — Q2 routing-vs-rank control)
-  5. mhc diagnostic  × 1 seed each (LR sweep: 1.5e-4, 7.5e-5)
-  6. mhc             × 3 seeds   (after diagnostic, if stable)
-  7. compose         × 1 seed    (only after mhc is resolved)
+Run studies in dependency order. Later studies may be conditioned on earlier results.
 
-Phase 2 (run after Phase 1 mol result is confirmed):
-  smoke_test → outer_crl → outer_crl_learned × 3 seeds → outer_crl_full → outer_crl_full_learned
-  → outer_transformer → outer_diff_attn → outer_mla → outer_strided → outer_crl_learned_noste
+```
+Study A — MoLE core (Q1, Q2):
+  bash run_experiments.sh study_mole
+  seed42 results complete. Multi-seed runs required before Q1/Q2 claims.
+
+Study B — Attention variants (Q4, Q5):
+  bash run_experiments.sh study_attention
+  seed42 results complete. Single-seed; no primary claims depend on multi-seed.
+
+Study C — go-mHC compositions (Q6):
+  bash run_experiments.sh study_mhc_compose
+  Pending. Interpret after Study B results confirmed.
+  Diagnose mHC grad norm before drawing conclusions from Study C.
+
+Study D — nGPT hyperspherical (Q7):
+  bash run_experiments.sh study_ngpt
+  Pending. Independent of Study C.
+
+Study E — Multi-sphere compositions (Q8):
+  bash run_experiments.sh study_sphere
+  Pending. Conditioned on Study D results (need ngpt baseline first).
+
+Scaling study (cross-cutting):
+  bash run_experiments.sh phase1_scaling
+  Pending. Independent; run in parallel with Study C–E.
+
+Phase 2 — outer encoder (Q3):
+  bash run_experiments.sh phase2
+  Requires: smoke test + verify check (automatic gates in run_experiments.sh)
+  Run after Phase 1 mol result confirmed. Run order: outer_crl first.
+
+mHC diagnostic (prerequisite for 3-seed A, C, E):
+  python phase1/train.py --config mhc --max_lr 1.5e-4 --total_steps 25000
+  python phase1/train.py --config mhc --max_lr 7.5e-5 --total_steps 25000
+  Required before any multi-seed mHC/compose runs.
 ```
 
 ---
