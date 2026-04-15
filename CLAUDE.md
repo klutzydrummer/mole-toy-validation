@@ -107,7 +107,7 @@ Authoritative correctness criteria live in `references/components/`. Before touc
 
 | Component | Spec | What to verify |
 |-----------|------|----------------|
-| mHC hyper-connections | `references/components/mhc.md` | H_res/H_pre/H_post init, KromHC (not Sinkhorn), softmax not softplus |
+| mHC hyper-connections | `references/components/mhc.md` | H_res/H_pre/H_post init, go-mHC (Cayley transform + block Frobenius, not Sinkhorn), softmax not softplus |
 | MoL routing | `references/components/mol_ffn.md` | sigmoid scores, unbiased weights, load-balance sign |
 | CausalRecurrenceLayer | `references/components/causal_recurrence.md` | sqrt(1-a²) term, float32 sigmoid, parallel scan |
 | BoundaryRouter | `references/components/boundary_router.md` | adjacent key k_{t-1}, p_0=1.0, top-M selection |

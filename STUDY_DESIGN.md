@@ -22,7 +22,7 @@ the original study design. Q4–Q7 were added as the project scope expanded in A
 
 | Question | Axis | Primary comparison |
 |----------|------|--------------------|
-| **Q3 — Does content-aware compression improve over fixed-stride compression?** | Active FLOPs + training steps | `outer_crl_learned` vs. `outer_strided` (same steps, same target compression ratio) |
+| **Q3 — Does content-aware compression improve over fixed-stride compression?** | Active FLOPs + training steps | `outer_crl_learned` vs. `outer_crl_fixed_stride` (same encoder, same steps, same target compression ratio) |
 
 ### Attention variant study (Q4–Q5): Study B
 
@@ -214,6 +214,8 @@ Based on literature consensus (Melis et al. 2018, NLP ablation practice):
 **Primary claims** (Q1, Q2): `baseline`, `baseline_wide`, `mol`, `mol_single` — all need 3 seeds.
 **Supporting configs** (`mhc`, `compose`): 1 seed until optimization issues are resolved.
 **Phase 2**: 3 seeds for `outer_crl_learned` (primary A1 config); 1 seed for all others.
+
+**Checkpoint policy for multi-seed comparisons**: Use **final-step BPC** (not best-checkpoint BPC) when computing cross-seed standard deviation and the "margin > 3× std" criterion. Best-checkpoint selection introduces an implicit hyperparameter search over checkpoint index; variance computed over best-BPC values across seeds conflates architecture quality with checkpoint selection luck. Best-checkpoint BPC may be reported separately as a secondary metric but must not be used for the primary margin calculation.
 
 **Reporting**: Always report mean ± std across seeds. A result is only claimable if:
 - The margin is larger than 3× the cross-seed standard deviation, OR
