@@ -144,9 +144,9 @@ def check_phase1():
 
 
 def check_phase1_scaling():
-    """Validate Phase 1 scaling configs at d=256 (n_heads=4) and d=768 (n_heads=12)."""
+    """Validate Phase 1 scaling configs at d=256/768/1024."""
     scale_configs = [
-        # (config_name, d, n_heads)
+        # (config_name, d, n_heads)  — head_dim=64 constant across all scales
         ("baseline",  256, 4),
         ("mla",       256, 4),
         ("diff_attn", 256, 4),
@@ -157,6 +157,11 @@ def check_phase1_scaling():
         ("diff_attn", 768, 12),
         ("diff_mla",  768, 12),
         ("mol",       768, 12),
+        ("baseline",  1024, 16),
+        ("mla",       1024, 16),
+        ("diff_attn", 1024, 16),
+        ("diff_mla",  1024, 16),
+        ("mol",       1024, 16),
     ]
 
     results = []

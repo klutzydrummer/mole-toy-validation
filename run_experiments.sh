@@ -13,7 +13,7 @@
 # Usage:
 #   bash run_experiments.sh                      # run everything (default)
 #   bash run_experiments.sh phase1               # all Phase 1 (17 configs, d=512)
-#   bash run_experiments.sh phase1_scaling       # scaling study: 5 configs × d=256,768
+#   bash run_experiments.sh phase1_scaling       # scaling study: 5 configs × d=256,768,1024
 #   bash run_experiments.sh phase2               # Phase 2 only (10 outer encoder configs)
 #   bash run_experiments.sh study_mole           # Study A: MoLE core (Q1, Q2)
 #   bash run_experiments.sh study_attention      # Study B: attention variants (Q4, Q5)
@@ -207,6 +207,14 @@ run_phase1_scale() {
         RESUME_FLAG="--resume"
     fi
 
+    # Memory optimizations for large-scale runs.
+    # d >= 1024 (~111M params) approaches T4 16GB limits without them.
+    # d < 1024: neither flag is needed; skip to avoid the ~30-40% grad_checkpoint overhead.
+    SCALE_FLAGS=""
+    if [ "$d" -ge 1024 ]; then
+        SCALE_FLAGS="--use_8bit_adam --grad_checkpoint"
+    fi
+
     python phase1/train.py \
         --config      "$cfg" \
         --d           "$d" \
@@ -218,6 +226,7 @@ run_phase1_scale() {
         --eval_interval 2500 \
         --log_interval  100 \
         --seed        "$seed" \
+        $SCALE_FLAGS \
         $RESUME_FLAG
 }
 
@@ -382,12 +391,14 @@ case "$TARGET" in
     ;;
 
   phase1_scaling)
-    # Scaling study: 5 key configs at d=256 (n_heads=4) and d=768 (n_heads=12).
+    # Scaling study: 5 key configs at d=256/768/1024 (n_heads=4/12/16).
     # Checkpoint prefix: {cfg}_d{d}_seed42  (avoids collision with d=512 runs).
     # Goal: measure how each architecture's BPC deficit scales with model size.
+    # 4 scale points (6M→28M→58M→111M) enable curve-fitting, not just direction.
     # d_c/d=25% is held constant, so ratio and absolute dimension change proportionally.
-    # d=256: head_dim=64, d_c=64  (MLA bottleneck ratio same as d=512: 25%)
-    # d=768: head_dim=64, d_c=192 (MLA bottleneck ratio same as d=512: 25%)
+    # d=256:  head_dim=64, d_c=64   (~6M params)
+    # d=768:  head_dim=64, d_c=192  (~58M params)
+    # d=1024: head_dim=64, d_c=256  (~111M params; --use_8bit_adam --grad_checkpoint auto-enabled)
     run_phase1_scale baseline   256 4
     run_phase1_scale mla        256 4
     run_phase1_scale diff_attn  256 4
@@ -398,6 +409,11 @@ case "$TARGET" in
     run_phase1_scale diff_attn  768 12
     run_phase1_scale diff_mla   768 12
     run_phase1_scale mol        768 12
+    run_phase1_scale baseline   1024 16
+    run_phase1_scale mla        1024 16
+    run_phase1_scale diff_attn  1024 16
+    run_phase1_scale diff_mla   1024 16
+    run_phase1_scale mol        1024 16
     ;;
 
   # Study A — MoLE core (Q1, Q2)
@@ -469,7 +485,7 @@ case "$TARGET" in
     echo "Bulk targets:"
     echo "  all                run all Phase 1 + Phase 2"
     echo "  phase1             all 17 Phase 1 configs (d=512)"
-    echo "  phase1_scaling     5 configs × d=256,768"
+    echo "  phase1_scaling     5 configs × d=256,768,1024"
     echo "  phase2             all 10 Phase 2 configs"
     echo ""
     echo "Study group targets (see STUDY_DESIGN.md):"

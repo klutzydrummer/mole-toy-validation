@@ -19,9 +19,11 @@ Phase 1 toy validation of the MoLE architecture (Mixture-of-LoRAs Encoder) on Wi
 Use `bash run_experiments.sh study_<name>` to run a single study group (e.g. `study_ngpt`).
 See `STUDY_DESIGN.md` for research questions, controls, and execution order.
 
-**Phase 1 scaling study (10 configs: 5 × d=256, 5 × d=768):**
-- Configs: `baseline`, `mla`, `diff_attn`, `diff_mla`, `mol` at d=256 (n_heads=4, ~6M) and d=768 (n_heads=12, ~58M)
-- Note: d_c/d=25% is held constant at all scales (d=256→d_c=64, d=512→d_c=128, d=768→d_c=192). The study measures how MLA performance scales relative to other architectures as absolute bottleneck dimension increases — it cannot independently isolate ratio vs. absolute dimension effects, since both change proportionally with d.
+**Phase 1 scaling study (15 configs: 5 × d=256/768/1024):**
+- Configs: `baseline`, `mla`, `diff_attn`, `diff_mla`, `mol` at d=256 (n_heads=4, ~6M), d=768 (n_heads=12, ~58M), d=1024 (n_heads=16, ~111M)
+- 4 scale points spanning 20× size range enable curve-fitting, not just direction detection
+- d_c/d=25% is held constant; ratio and absolute dimension are confounded — cannot isolate them
+- d=1024 runs auto-receive `--use_8bit_adam --grad_checkpoint` (set in run_phase1_scale for d≥1024)
 - Checkpoints use prefix `{cfg}_d{d}_seed42` to avoid collision with d=512 runs
 - Run: `bash run_experiments.sh phase1_scaling`
 
@@ -60,7 +62,7 @@ nix-shell --run "ruff check ."                  # lint
 ```bash
 bash run_experiments.sh                               # run all configs (Phase 1 + Phase 2)
 bash run_experiments.sh phase1                        # Phase 1 only (17 configs, d=512)
-bash run_experiments.sh phase1_scaling                # scaling study (5 configs × d=256, d=768)
+bash run_experiments.sh phase1_scaling                # scaling study (5 configs × d=256,768,1024)
 bash run_experiments.sh phase2                        # Phase 2 only (10 outer encoder configs)
 bash run_experiments.sh baseline                      # single Phase 1 config
 bash run_experiments.sh outer_crl                     # single Phase 2 config

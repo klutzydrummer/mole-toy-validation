@@ -244,20 +244,36 @@ within the mHC block, not in the number of parameters.
 
 ### Scaling study (cross-cutting)
 
-5 configs × {d=256, d=768}: `baseline`, `mla`, `diff_attn`, `diff_mla`, `mol`.
+5 configs × {d=256, d=768, d=1024}: `baseline`, `mla`, `diff_attn`, `diff_mla`, `mol`.
 Checkpoint prefix: `{cfg}_d{d}_seed42`.
+
+**Scale points:**
+
+| d | n_heads | head_dim | ~params (baseline) | d_c (MLA) | Memory flags |
+|---|---------|----------|--------------------|-----------|--------------|
+| 256 | 4 | 64 | ~6M | 64 | — |
+| 512 | 8 | 64 | ~28M | 128 | — (Phase 1 primary) |
+| 768 | 12 | 64 | ~58M | 192 | — |
+| 1024 | 16 | 64 | ~111M | 256 | `--use_8bit_adam --grad_checkpoint` (auto) |
+
+d=1024 runs automatically receive `--use_8bit_adam --grad_checkpoint` via run_experiments.sh.
+These are not needed for d≤768 and would add unnecessary compute overhead there.
 
 **Research question (restated):** How does each architecture's BPC, relative to the
 `baseline` at the same scale, change as model size scales from d=256 (~6M) to d=512
-(~28M) to d=768 (~58M)? Specifically: does MLA's KV compression deficit (Q5) grow,
-shrink, or remain constant in absolute BPC terms as model size increases?
+(~28M) to d=768 (~58M) to d=1024 (~111M)? Does MLA's KV compression deficit (Q5) grow,
+shrink, or remain constant? Does MoL routing benefit grow with scale?
+
+**Why 4 scale points:** Three points constrain only a line — any monotone trend fits.
+Four points (spanning a 20× size range) reveal whether the BPC deficit relationship
+is linear, accelerating, or has an inflection. This is the minimum for curve-fitting.
 
 **What this design cannot answer:** d_c/d=25% is held constant at all scales
-(d=256→d_c=64, d=512→d_c=128, d=768→d_c=192). Both the ratio and the absolute
-bottleneck dimension increase proportionally with d. The study cannot isolate whether
-MLA's performance is ratio-driven or absolute-dimension-driven — both effects are
-confounded. To isolate them would require a fixed-d_c run (e.g., d=768 with d_c=128
-keeps absolute dimension constant while ratio shrinks). That run is not scheduled.
+(d=256→d_c=64, d=512→d_c=128, d=768→d_c=192, d=1024→d_c=256). Both the ratio and the
+absolute bottleneck dimension increase proportionally with d. The study cannot isolate
+whether MLA's performance is ratio-driven or absolute-dimension-driven — both effects are
+confounded. To isolate them would require a fixed-d_c run (e.g., d=1024 with d_c=128).
+That run is not scheduled.
 
 **Correct framing for any write-up:** Report "MLA BPC deficit vs. baseline at each
 scale" and note whether the deficit is stable, growing, or shrinking. Do not claim
@@ -495,7 +511,7 @@ BPC at lower active FLOPs), not in raw quality.
 | Study D — nGPT hyperspherical (Q7) | 3 × 100k steps | ~7–9h | Pending |
 | Study E — Multi-sphere compositions (Q8) | 2 × 100k steps | ~5–7h | Pending |
 | Phase 2 — Outer encoder (Q3) | 10 × 50k steps | ~10–15h | Pending |
-| Scaling study | 10 × 100k steps | ~20–25h | Pending |
+| Scaling study | 15 × 100k steps | ~45–50h | Pending |
 | Multi-seed reruns (A primary claims) | 6 configs × 2 more seeds | ~12–15h | Pending |
 
 **Total estimated:** ~80–105 T4-hours for full execution.
@@ -526,7 +542,7 @@ are extensions, not prerequisites.
 
 - **Study A multi-seed mHC/compose**: if go-mHC mhc runs show rising grad norm (trend > 0.1 units over 100k steps), pause and investigate before running 3-seed mHC or compose (see §9).
 - **Study C**: same condition — go-mHC compositions depend on understanding the mHC baseline if instability is observed.
-- **Scaling study**: at ~20–25h it is the single most expensive study and answers the
+- **Scaling study**: at ~45–50h it is the single most expensive study and answers the
   narrowest question. Schedule last.
 
 ---
