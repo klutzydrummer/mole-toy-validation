@@ -113,8 +113,8 @@ class GoMHCResidual(nn.Module):
         # (I+A) @ Q = (I-A)  →  Q = (I+A)^{-1}(I-A)
         # (I+A) is always non-singular: A skew-symmetric → eigenvalues purely imaginary → -1 ∉ spectrum
         dtype = A.dtype
-        I = self.I_ns.to(dtype=dtype, device=A.device).expand(B, L, ns, ns)
-        Q = torch.linalg.solve(I + A, I - A)  # [B, L, ns, ns]
+        eye = self.I_ns.to(dtype=dtype, device=A.device).expand(B, L, ns, ns)
+        Q = torch.linalg.solve(eye + A, eye - A)  # [B, L, ns, ns]
 
         # Block Frobenius projection → [B, L, n, n] exactly doubly stochastic.
         # Reshape Q as [B, L, n, s, n, s]: Q_blocks[b,l,i,:,j,:] = Q[b,l,i*s:(i+1)*s, j*s:(j+1)*s]

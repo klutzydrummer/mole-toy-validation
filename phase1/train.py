@@ -310,7 +310,7 @@ def train(config: str, d: int = 512, n_layers: int = 8, n_heads: int = 8,
                     _hf.write(json.dumps({"step": step, "hc_pre_weights": hc_stats,
                                           "type": "mhc_hpre"}) + "\n")
                 # Print max H_pre weight across streams — near 1.0 = near one-hot (good)
-                max_pre = max(max(l["pre_attn"]) for l in hc_stats)
+                max_pre = max(max(stat["pre_attn"]) for stat in hc_stats)
                 print(f"  >>> mHC H_pre max weight: {max_pre:.3f} (1.0 = one-hot, clean routing)")
 
             if val_bpc < best_val_bpc:
