@@ -31,7 +31,7 @@ the original study design. Q4–Q7 were added as the project scope expanded in A
 | **Q4 — Does differential attention improve over baseline?** | Attention mechanism | `diff_attn` vs. `baseline` (capacity confound: +25% attn params) |
 | **Q5 — Does MLA KV compression hurt at this scale?** | KV bottleneck dimension | `mla` vs. `baseline`; `diff_mla` vs. `diff_attn` |
 
-**Known results (seed42):** diff_attn best (3.5131 BPC, –0.047 over baseline); mla worst (3.5859 BPC, +0.025 over baseline). Q4 result is not a controlled comparison — doubled Q heads add ~25% more attention parameters. Q5: KV compression at d_c=128 (25% of d) is too lossy at this scale.
+**Q4 caveat:** `diff_attn` is not a controlled comparison vs. `baseline` — doubled Q heads add ~25% more attention parameters. BPC improvement reflects architecture + capacity combined. **Q5 prior observation:** KV compression at d_c=128 appeared lossy in prior runs; to be confirmed with current codebase.
 
 ### go-mHC composition study (Q6): Study C
 
@@ -203,20 +203,20 @@ within the mHC block, not in the number of parameters.
 
 | Config | Purpose | Notes |
 |--------|---------|-------|
-| `baseline` | Dense SwiGLU reference (27.8M) | seed42 complete |
-| `baseline_wide` | Capacity-matched dense baseline (31.1M) | seed42 complete; 3-seed required for Q1 claim |
-| `mol` | MoL routing (31.1M, top-2 of 8) | seed42 complete; 3-seed required for Q1/Q2 |
-| `mol_single` | Single rank-72 LoRA, no routing (31.1M) | seed42 complete; 3-seed required for Q2 |
-| `mhc` | Hyper-connections on baseline (27.8M) | seed42 complete; grad norm rising — diagnose before 3-seed |
-| `compose` | mHC + MoL (31.1M) | seed42 complete; blocked on mHC diagnosis |
+| `baseline` | Dense SwiGLU reference (27.8M) | pending re-run |
+| `baseline_wide` | Capacity-matched dense baseline (30.2M) | pending re-run; 3-seed required for Q1 claim |
+| `mol` | MoL routing (31.1M, top-2 of 8) | pending re-run; 3-seed required for Q1/Q2 |
+| `mol_single` | Single rank-72 LoRA, no routing (31.1M) | pending re-run; 3-seed required for Q2 |
+| `mhc` | Hyper-connections on baseline (28.0M) | pending re-run with go-mHC |
+| `compose` | mHC + MoL (31.4M) | pending re-run with go-mHC |
 
 ### Study B — Attention variants (Q4, Q5)
 
 | Config | Purpose | Notes |
 |--------|---------|-------|
-| `mla` | MLA KV compression (27.8M, d_c=128) | seed42 complete |
-| `diff_attn` | Differential attention V2 (capacity confound: +25% attn params) | seed42 complete |
-| `diff_mla` | DiffMLA V2 + MLA composition (novel) | seed42 complete |
+| `mla` | MLA KV compression (27.4M, d_c=128) | pending re-run |
+| `diff_attn` | Differential attention V2 (29.9M; capacity confound: +25% attn params) | pending re-run |
+| `diff_mla` | DiffMLA V2 + MLA composition (26.3M, novel) | pending re-run |
 
 ### Study C — go-mHC compositions (Q6)
 
@@ -383,11 +383,11 @@ Run studies in dependency order. Later studies may be conditioned on earlier res
 ```
 Study A — MoLE core (Q1, Q2):
   bash run_experiments.sh study_mole
-  seed42 results complete. Multi-seed runs required before Q1/Q2 claims.
+  Re-running from scratch with current codebase. Multi-seed required before Q1/Q2 claims.
 
 Study B — Attention variants (Q4, Q5):
   bash run_experiments.sh study_attention
-  seed42 results complete. Single-seed; no primary claims depend on multi-seed.
+  Re-running from scratch. Single-seed sufficient for exploratory Q4/Q5 observations.
 
 Study C — go-mHC compositions (Q6):
   bash run_experiments.sh study_mhc_compose

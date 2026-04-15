@@ -146,13 +146,10 @@ Dataset: WikiText-103-raw, BPE tokenizer (vocab=4096, sentencepiece), seq_len=25
 
 ## Phase 1 Results
 
-See `checkpoints/report.md` (regenerate: `python utils/reporter.py`) and memory for full tables and ablation findings.
+All Phase 1 runs are being re-run from scratch with the current codebase (go-mHC).
+Prior seed42 results are superseded. See `checkpoints/report.md` for live training state.
 
-**All results are single-seed (seed=42).** Multi-seed reruns (3 seeds each) are required before Q1 (mol vs. baseline_wide) and Q2 (mol vs. mol_single) conclusions are claimable. Key deltas are small (Q1: 0.0086 BPC, Q2: 0.0075 BPC) — treat as preliminary until multi-seed runs confirm.
-
-**`diff_attn` capacity caveat:** `diff_attn`'s best result (3.5131 BPC) is NOT a controlled comparison vs. `baseline`. Doubled Q heads add ~25% more attention parameters. The improvement reflects architecture + capacity advantage combined.
-
-Do not compose mHC+MoL+HDC until mHC's grad norm issue is diagnosed. The rising grad norm is continuous — observed 0.80→1.37 over 100k steps with no stabilization. Diagnostic: `python phase1/train.py --config mhc --max_lr 1.5e-4 --total_steps 25000`.
+**`diff_attn` capacity caveat:** Doubled Q heads add ~25% more attention parameters vs. `baseline`. Any BPC improvement reflects architecture + capacity advantage combined — not a controlled comparison.
 
 ---
 
@@ -195,7 +192,7 @@ Note: `boundary_bpc > midchunk_bpc` is geometrically expected (fresh concept tok
 When compacting, preserve:
 - Current phase, active task, and any open decisions
 - Verification status of any component under discussion; any FAIL verdicts
-- The mHC grad-norm diagnostic warning (do not compose until diagnosed)
+- Any active mHC grad-norm observations from current runs
 - Any in-progress code changes not yet committed
 
 Discard:

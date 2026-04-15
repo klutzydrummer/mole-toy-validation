@@ -25,28 +25,17 @@ See `STUDY_DESIGN.md` for research questions, controls, and execution order.
 
 ---
 
-## Phase 1 Results (seed42, 100k steps)
+## Phase 1 Results
 
-Best checkpoint val BPC:
+All Phase 1 runs are being re-run from scratch with the current codebase (go-mHC,
+arXiv:2604.02309). Prior seed42 results are superseded — they were produced by an
+unconfirmed implementation mix during the KromHC → go-mHC migration in April 2026 and
+are not reproducible from the current repo.
 
-| Config | BPC | Params | Notes |
-|--------|-----|--------|-------|
-| diff_attn | 3.5131 | ~29.8M | Best overall — capacity confound (+25% attn params) |
-| baseline_wide | 3.5355 | 31.1M | Q1 control — capacity beats mol routing |
-| compose | 3.5416 | 31.1M | grad norm rising |
-| mhc | 3.5428 | 27.8M | grad norm rising 0.80→1.37 |
-| mol | 3.5441 | 31.1M | Phase 2 inner network |
-| diff_mla | 3.5474 | ~29.8M | novel DiffMLA composition |
-| mol_single | 3.5516 | 31.1M | Q2 control |
-| baseline | 3.5605 | 27.8M | reference |
-| mla | 3.5859 | 27.8M | KV compression too lossy at d_c=128 |
+Results will be posted here as studies complete. See `checkpoints/report.md` for live
+training state (regenerate: `python utils/reporter.py`).
 
-Studies C–E (mHC compositions, nGPT, multi-sphere) are pending.
-
-All results are single-seed (seed=42). Multi-seed reruns (3 seeds) required before Q1/Q2
-conclusions are claimable. See `STUDY_DESIGN.md` §5 for statistical requirements.
-
-Full results: `checkpoints/report.md` (regenerate: `python utils/reporter.py`)
+See `STUDY_DESIGN.md` §5 for statistical requirements (3 seeds for primary claims).
 
 ---
 

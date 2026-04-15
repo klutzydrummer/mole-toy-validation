@@ -263,19 +263,14 @@ H_post can only route between two streams, giving less gradient diversity than n
 mHC-lite demonstrates that 10–20 fixed SK iterations do not guarantee exact doubly
 stochasticity. In 24-layer networks, column sums deviate from 1.0 by up to 100% per-layer,
 and the composite product deviates up to 220%. At 8 layers the compounding is ~1/3 as
-severe, but the constraint violation is still present.
+severe, but the constraint violation is still present. This motivated the migration to
+go-mHC (Cayley transform), which is exactly doubly stochastic by construction.
 
-**This is the most likely explanation for the rising grad norm observed in Phase 1 mHC
-training (gnorm: 0.77 early → 1.395 at step 100k).** The doubly stochastic constraint is
-not being fully enforced, allowing H_res to drift and spectral norm to slowly exceed 1.0.
-
-### The rising grad norm pattern
-
-Rising grad norm in mHC (vs. flat grad norm in baseline) is consistent with the HC
-instability described in arXiv:2512.24880 Section 3.1: unconstrained or imperfectly
-constrained H_res matrices compound across layers. At 8 layers with 10 SK iterations
-the effect is slow rather than catastrophic (no loss surge), but it accumulates over 100k
-steps.
+**Note:** A rising grad norm was observed in prior runs with an unconfirmed implementation.
+That explanation (Sinkhorn approximation gap) does not apply to go-mHC. Grad norm behavior
+under go-mHC is to be established from the current runs. If a rising grad norm is observed
+with go-mHC, the cause is something other than DS constraint violation and must be
+investigated independently.
 
 ---
 
