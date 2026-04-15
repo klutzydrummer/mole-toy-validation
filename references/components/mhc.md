@@ -28,10 +28,12 @@ stochastic via Cayley transform + block Frobenius projection. Replaced static Kr
   Achieves exact doubly stochasticity at O(n²C) parameter complexity via Kronecker factorization.
   Best downstream accuracy and lowest gradient norms among all HC variants.
   **Superseded in this implementation by go-mHC (April 2026).**
-- **Follow-up:** `sources/papers/go_mhc_2604.02309.md` (to be added) — "go-mHC: Generalized
-  Orthostochastic Hyper-Connections", arXiv:2604.02309, April 2026. Input-conditional H_res via
-  Cayley transform + block Frobenius projection. Exactly doubly stochastic for any n. s=2
-  recommended. No separate optimizer group required. **Current implementation.**
+- **Follow-up:** `sources/papers/go_mhc_2604.02309.md` — "go-mHC: Direct Parameterization of
+  Manifold-Constrained Hyper-Connections via Generalized Orthostochastic Matrices",
+  Dandachi & Diggs-Galligan, arXiv:2604.02309, April 2026. Input-conditional H_res via
+  Cayley transform Q=(I−A)(I+A)⁻¹ + block Frobenius projection. Exactly doubly stochastic
+  for any n. s=2 recommended (10× faster convergence on synthetic benchmarks vs prior exact
+  methods). No separate optimizer group required. **Current implementation.**
 - **Related (composition design space):** `sources/papers/shc_2603.20896.md`
   — "Beyond the Birkhoff Polytope: Spectral-Sphere-Constrained Hyper-Connections",
   arXiv:2603.20896, March 2026. Shifts H_res feasible set from Birkhoff polytope to
