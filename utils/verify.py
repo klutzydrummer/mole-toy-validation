@@ -90,6 +90,10 @@ TRACKED_COMPONENTS: dict[str, list[str]] = {
     "boundary_router": [
         "phase2/components/boundary_router.py",
     ],
+    "ngpt": [
+        "phase1/components/ngpt.py",
+        "phase1/components/_shared.py",  # apply_rope, precompute_rope
+    ],
 }
 
 

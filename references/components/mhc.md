@@ -32,6 +32,17 @@ stochastic via Cayley transform + block Frobenius projection. Replaced static Kr
   Orthostochastic Hyper-Connections", arXiv:2604.02309, April 2026. Input-conditional H_res via
   Cayley transform + block Frobenius projection. Exactly doubly stochastic for any n. s=2
   recommended. No separate optimizer group required. **Current implementation.**
+- **Related (composition design space):** `sources/papers/shc_2603.20896.md`
+  — "Beyond the Birkhoff Polytope: Spectral-Sphere-Constrained Hyper-Connections",
+  arXiv:2603.20896, March 2026. Shifts H_res feasible set from Birkhoff polytope to
+  spectral norm sphere — allows negative entries, eliminates Sinkhorn instability.
+  Most relevant to `ngpt_mhc_a` (multi-sphere composition): spectral sphere may be
+  more natural partner to S^{d-1} than Birkhoff polytope.
+- **Related (composition design space):** `sources/papers/jpmhc_2602.18308.md`
+  — "JPmHC: Dynamical Isometry via Orthogonal Hyper-Connections", arXiv:2602.18308,
+  Feb 2026. Uses Stiefel-manifold (orthogonal group) for H_res instead of DS matrices.
+  Cayley transform for O(n). Related to `ngpt_mhc_a/c` design questions about which
+  manifold for H_res is most compatible with per-stream sphere constraints.
 
 ---
 
