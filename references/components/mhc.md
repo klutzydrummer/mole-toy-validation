@@ -248,15 +248,17 @@ Init: `W_res.weight=0, W_res.bias=0` → `A=0` → `Q=I` → `H_res=I_n` at star
 The original HC paper (ByteDance, arXiv:2409.19606) and the mHC paper both report
 experiments at 1B parameters minimum. The smallest HC result is OLMo-1B-DHC with n=4.
 **No sub-1B results exist in any of the three mHC-family papers.** Behavior at ~28M params
-is extrapolation. The Phase 1 result (mHC: 3.5736 vs baseline: 3.5875) — mHC losing to
-baseline — is consistent with HC gains being primarily a depth/scale phenomenon.
+is extrapolation. Phase 1 results from prior runs are superseded and not reproducible from the current codebase. Results from go-mHC runs are pending — see STUDY_DESIGN.md for re-run status.
 
-### n=2 is below the validated minimum
+### n=2 — historical consideration (current project uses n=4)
 
 The original HC paper found **n=1 hurts vs baseline** and validates n=4 as the recommended
-default. n=2 (used in this project for parameter-budget reasons) is the floor of potentially
-helpful territory but is untested in the literature. At n=2, stream divergence is limited —
-H_post can only route between two streams, giving less gradient diversity than n=4.
+default. n=2 was considered in an earlier phase of this project for parameter-budget reasons
+but was not adopted. The current implementation uses **n_streams=4** throughout, matching the
+validated HC default. The concerns below are historical context, not current limitations.
+
+At n=2, stream divergence is limited — H_post can only route between two streams, giving less
+gradient diversity than n=4.
 
 ### The Sinkhorn approximation gap (from mHC-lite, arXiv:2601.05732)
 
@@ -287,13 +289,13 @@ Outperforms mHC on val loss (3.185 vs 3.204) and throughput (+2% vs -6.7%).
 
 **Critical limitation:** parameter count scales as O(nC · n!). Practical only for n ≤ 4–5.
 
-**For n=2 (this project's n_streams=2):** mHC-lite is trivially exact. Only 2! = 2
+**For n=2 (not used in this project; n=4 is current):** mHC-lite is trivially exact. Only 2! = 2
 permutation matrices exist (identity I and swap Swap):
 
     H_l^{res} = a · I + (1-a) · Swap,   a = softmax([logit_0, logit_1])[0]
 
 A single scalar a ∈ (0, 1) parameterizes the full Birkhoff polytope at n=2.
-Implementation cost: negligible. If re-running mHC, this is the correct H_res for n=2.
+Implementation cost: negligible. Noted here as historical context.
 
 ### KromHC (arXiv:2601.21579, January 2026)
 
@@ -325,9 +327,9 @@ Achieves best downstream accuracy and lowest gradient norms among all HC variant
 4. **H_post uniform at init:** At init, confirm `post_weights = softmax(post_logits)` ≈
    `[1/n, ..., 1/n]` (from zeros init).
 
-5. **Stream divergence:** Verify that after several training steps with n_streams=2, the two
-   stream vectors are no longer identical. Without H_post broadcasting different weights,
-   streams cannot diverge (see phase1/model.py comment at line 123).
+5. **Stream divergence:** Verify that after several training steps with n_streams=4, stream
+   vectors are no longer identical. Without H_post broadcasting different weights,
+   streams cannot diverge.
 
 6. **mHC forward shapes:** Confirm `_forward_mhc` receives `[B, L, n, d]` and returns
    `[B, L, n, d]`; confirm `HyperConnection.forward` receives `[B, L, n, d]` and returns

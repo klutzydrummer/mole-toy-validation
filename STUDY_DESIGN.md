@@ -8,8 +8,9 @@ addition or change to training procedure should be evaluated against this docume
 
 ## 1. Research Questions
 
-The project is organized into seven research questions across five study groups. Q1–Q3 were
+The project is organized into eight research questions across five study groups. Q1–Q3 were
 the original study design. Q4–Q7 were added as the project scope expanded in April 2026.
+Q8 was added with Study E.
 
 ### Core MoLE study (Q1–Q2): Study A
 
@@ -28,10 +29,10 @@ the original study design. Q4–Q7 were added as the project scope expanded in A
 
 | Question | Axis | Primary comparison |
 |----------|------|--------------------|
-| **Q4 — Does differential attention improve over baseline?** | Attention mechanism | `diff_attn` vs. `baseline` (capacity confound: +25% attn params) |
+| **Q4 — Exploratory: combined effect of differential attention mechanism + increased attention capacity** | Attention mechanism + capacity | `diff_attn` vs. `baseline` (not controlled: +25% attn params) |
 | **Q5 — Does MLA KV compression hurt at this scale?** | KV bottleneck dimension | `mla` vs. `baseline`; `diff_mla` vs. `diff_attn` |
 
-**Q4 caveat:** `diff_attn` is not a controlled comparison vs. `baseline` — doubled Q heads add ~25% more attention parameters. BPC improvement reflects architecture + capacity combined. **Q5 prior observation:** KV compression at d_c=128 appeared lossy in prior runs; to be confirmed with current codebase.
+**Q4 framing:** `diff_attn` is NOT a controlled comparison vs. `baseline`. Doubled Q heads add ~25% more attention parameters (+2.1M = 8 layers × d²). Any BPC difference reflects architecture + capacity combined and cannot attribute improvement to the differential attention mechanism alone. Q4 is an **exploratory observation**, not a hypothesis-driven research question. It is listed here for completeness and to document the confound explicitly. Do not interpret Q4 results as evidence for or against differential attention as a mechanism. **Q5 prior observation:** KV compression at d_c=128 appeared lossy in prior runs; to be confirmed with current codebase.
 
 ### go-mHC composition study (Q6): Study C
 
@@ -296,7 +297,8 @@ for the control. An n=1 control is not a defensible control arm. All other Phase
 ## 6. Metrics to Report for Every Config
 
 ### Per run (final values)
-- `best_val_bpc` — primary metric
+- `final_step_bpc` — **primary metric for statistical comparisons** (used in §5 margin calculations; see checkpoint policy note in §5)
+- `best_val_bpc` — secondary metric; reported for reference and to track convergence trajectory
 - `n_params_total` — total parameter count
 - `n_params_active` — active params per forward pass (compute from architecture)
 - `final_grad_norm` — last 1k steps mean
@@ -371,7 +373,7 @@ give mHC a silent advantage.
 ### Cannot conclude
 - That results transfer to larger scale without a second data point at a different model size
 - Absolute BPC rankings vs. published numbers (different tokenizer, sequence length, vocab)
-- That mHC is definitively broken — the diagnostic runs at 1.5e-4 and 7.5e-5 LR are required first
+- That mHC is definitively broken from a single rising grad norm observation — possible causes include LR sensitivity, n=4 stream initialization variance, or a fundamental instability in the Cayley parameterization at this scale; investigate before concluding
 - Cross-phase BPC comparisons (Phase 1 at 100k steps ≠ Phase 2 at 50k steps)
 
 ---
@@ -411,10 +413,11 @@ Phase 2 — outer encoder (Q3):
   Requires: smoke test + verify check (automatic gates in run_experiments.sh)
   Run after Phase 1 mol result confirmed. Run order: outer_crl first.
 
-mHC diagnostic (prerequisite for 3-seed A, C, E):
-  python phase1/train.py --config mhc --max_lr 1.5e-4 --total_steps 25000
-  python phase1/train.py --config mhc --max_lr 7.5e-5 --total_steps 25000
-  Required before any multi-seed mHC/compose runs.
+mHC grad norm investigation (conditional — only if go-mHC runs show rising grad norm):
+  If trend > 0.1 units over 100k steps, pause Studies C and E and investigate.
+  Possible causes: LR sensitivity (compare 1.5e-4 and 7.5e-5), n=4 stream initialization
+  variance, or a fundamental instability in the Cayley parameterization at this scale.
+  Determine the cause before prescribing a fix or blocking multi-seed runs.
 ```
 
 ---
@@ -486,8 +489,8 @@ BPC at lower active FLOPs), not in raw quality.
 
 | Study | Configs | Est. T4 hours | Status |
 |-------|---------|--------------|--------|
-| Study A — MoLE core (Q1, Q2) | 6 × 100k steps | ~12–15h | Seed42 complete |
-| Study B — Attention variants (Q4, Q5) | 3 × 100k steps | ~6–8h | Seed42 complete |
+| Study A — MoLE core (Q1, Q2) | 6 × 100k steps | ~12–15h | Pending re-run (prior results superseded) |
+| Study B — Attention variants (Q4, Q5) | 3 × 100k steps | ~6–8h | Pending re-run (prior results superseded) |
 | Study C — go-mHC compositions (Q6) | 3 × 100k steps | ~8–10h | Pending |
 | Study D — nGPT hyperspherical (Q7) | 3 × 100k steps | ~7–9h | Pending |
 | Study E — Multi-sphere compositions (Q8) | 2 × 100k steps | ~5–7h | Pending |
@@ -521,9 +524,8 @@ are extensions, not prerequisites.
 
 ### Compute risk flags
 
-- **Study A multi-seed mHC/compose**: blocked until mHC grad norm is diagnosed (see §9
-  mHC diagnostic). Do not run 3-seed mHC or compose until diagnostic LR sweeps complete.
-- **Study C**: same block — go-mHC compositions depend on understanding the mHC baseline.
+- **Study A multi-seed mHC/compose**: if go-mHC mhc runs show rising grad norm (trend > 0.1 units over 100k steps), pause and investigate before running 3-seed mHC or compose (see §9).
+- **Study C**: same condition — go-mHC compositions depend on understanding the mHC baseline if instability is observed.
 - **Scaling study**: at ~20–25h it is the single most expensive study and answers the
   narrowest question. Schedule last.
 

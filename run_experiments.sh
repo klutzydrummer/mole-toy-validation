@@ -379,8 +379,8 @@ case "$TARGET" in
   phase1_scaling)
     # Scaling study: 5 key configs at d=256 (n_heads=4) and d=768 (n_heads=12).
     # Checkpoint prefix: {cfg}_d{d}_seed42  (avoids collision with d=512 runs).
-    # Goal: determine whether MLA's KV compression failure is a ratio or absolute
-    # dimension problem, and whether DiffMLA composes better at scale.
+    # Goal: measure how each architecture's BPC deficit scales with model size.
+    # d_c/d=25% is held constant, so ratio and absolute dimension change proportionally.
     # d=256: head_dim=64, d_c=64  (MLA bottleneck ratio same as d=512: 25%)
     # d=768: head_dim=64, d_c=192 (MLA bottleneck ratio same as d=512: 25%)
     run_phase1_scale baseline   256 4
