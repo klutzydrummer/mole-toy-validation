@@ -56,8 +56,9 @@ def check_phase1():
         ("mol_single",    {"mol_rank": 72}),  # rank=72 exact capacity match to mol (9×8)
         ("compose",       {}),
         ("mla",           {}),
-        ("diff_attn",     {}),
-        ("diff_mla",      {}),
+        ("diff_attn",         {}),
+        ("diff_attn_matched", {"d_ff": 1240}),  # d_ff=1240 compensates for doubled Q proj; ~27.83M ≈ baseline ~27.80M
+        ("diff_mla",          {}),
         # go-mHC compositions
         ("diff_mhc",      {}),
         ("mla_mhc",       {}),

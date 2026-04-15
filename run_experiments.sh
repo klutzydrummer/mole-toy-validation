@@ -150,11 +150,14 @@ run_phase1() {
     # Config-specific overrides
     # baseline_wide: d_ff=1600 to match mol total param count (~31.1M) for Q1 fair comparison
     # mol_single: mol_rank=72 (= 1 shared + 8 experts × rank 8 = rank-72 exact capacity match)
+    # diff_attn_matched: d_ff=1240 to compensate for doubled Q projection (~27.83M ≈ baseline ~27.80M)
     EXTRA_FLAGS=""
     if [ "$cfg" = "baseline_wide" ]; then
         EXTRA_FLAGS="--d_ff 1600"
     elif [ "$cfg" = "mol_single" ]; then
         EXTRA_FLAGS="--mol_rank 72"
+    elif [ "$cfg" = "diff_attn_matched" ]; then
+        EXTRA_FLAGS="--d_ff 1240"
     fi
 
     python phase1/train.py \
@@ -311,6 +314,7 @@ case "$TARGET" in
     run_phase1 compose
     run_phase1 mla
     run_phase1 diff_attn
+    run_phase1 diff_attn_matched
     run_phase1 diff_mla
     # go-mHC compositions (April 2026)
     run_phase1 diff_mhc
@@ -347,6 +351,7 @@ case "$TARGET" in
     run_phase1 compose
     run_phase1 mla
     run_phase1 diff_attn
+    run_phase1 diff_attn_matched
     run_phase1 diff_mla
     # go-mHC compositions (April 2026)
     run_phase1 diff_mhc
@@ -409,6 +414,7 @@ case "$TARGET" in
   study_attention)
     run_phase1 mla
     run_phase1 diff_attn
+    run_phase1 diff_attn_matched
     run_phase1 diff_mla
     ;;
 
@@ -433,7 +439,7 @@ case "$TARGET" in
     ;;
 
   # Individual Phase 1 configs
-  baseline | mhc | mol | compose | mla | diff_attn | diff_mla | \
+  baseline | mhc | mol | compose | mla | diff_attn | diff_attn_matched | diff_mla | \
   diff_mhc | mla_mhc | diff_mla_mhc | \
   ngpt | ngpt_mla | ngpt_diff_attn | \
   ngpt_mhc_a | ngpt_mhc_c)

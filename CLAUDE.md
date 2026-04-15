@@ -6,12 +6,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Phase 1 toy validation of the MoLE architecture (Mixture-of-LoRAs Encoder) on WikiText-103 (BPE, vocab=4096). Phase 2 (HDC) wraps the mol inner network with Zone E and Zone D for content-aware compression.
 
-**Phase 1 configs (17 total across 5 study groups, d=512 ~28M params):**
+**Phase 1 configs (18 total across 5 study groups, d=512 ~28M params):**
 
 | Study | Configs | Research question |
 |-------|---------|------------------|
 | A — MoLE core | `baseline`, `baseline_wide`, `mol`, `mol_single`, `mhc`, `compose` | Q1: routing vs. capacity; Q2: routing vs. high-rank adapter |
-| B — Attention | `mla`, `diff_attn`, `diff_mla` | Q4: diff attn quality; Q5: MLA KV compression cost |
+| B — Attention | `mla`, `diff_attn`, `diff_attn_matched`, `diff_mla` | Q4: diff attn mechanism (controlled: `diff_attn_matched` vs `baseline`); Q5: MLA KV compression cost |
 | C — mHC compose | `diff_mhc`, `mla_mhc`, `diff_mla_mhc` | Q6: mHC + attention variant compositions |
 | D — nGPT | `ngpt`, `ngpt_mla`, `ngpt_diff_attn` | Q7: hyperspherical constraint benefit |
 | E — Multi-sphere | `ngpt_mhc_a`, `ngpt_mhc_c` | Q8: multi-sphere vs. wrap-sublayer mHC |
@@ -149,7 +149,7 @@ Dataset: WikiText-103-raw, BPE tokenizer (vocab=4096, sentencepiece), seq_len=25
 All Phase 1 runs are being re-run from scratch with the current codebase (go-mHC).
 Prior seed42 results are superseded. See `checkpoints/report.md` for live training state.
 
-**`diff_attn` capacity caveat:** Doubled Q heads add ~25% more attention parameters vs. `baseline`. Any BPC improvement reflects architecture + capacity advantage combined — not a controlled comparison.
+**`diff_attn` capacity note:** Doubled Q heads add ~25% more attention parameters vs. `baseline` (+2.1M). Use `diff_attn_matched` (d_ff=1240, ~27.86M) for the controlled Q4 comparison. `diff_attn` reports the combined mechanism + capacity effect and is an upper bound complement.
 
 ---
 

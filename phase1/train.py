@@ -394,7 +394,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Phase 1 Training")
     parser.add_argument("--config", type=str, default="baseline",
                         choices=["baseline", "baseline_wide", "mhc", "mol", "mol_single", "compose",
-                                 "mla", "diff_attn", "diff_mla",
+                                 "mla", "diff_attn", "diff_attn_matched", "diff_mla",
                                  "diff_mhc", "mla_mhc", "diff_mla_mhc",
                                  "ngpt", "ngpt_mla", "ngpt_diff_attn",
                                  "ngpt_mhc_a", "ngpt_mhc_c"])

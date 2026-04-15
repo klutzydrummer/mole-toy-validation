@@ -29,10 +29,10 @@ Q8 was added with Study E.
 
 | Question | Axis | Primary comparison |
 |----------|------|--------------------|
-| **Q4 — Exploratory: combined effect of differential attention mechanism + increased attention capacity** | Attention mechanism + capacity | `diff_attn` vs. `baseline` (not controlled: +25% attn params) |
+| **Q4 — Does differential attention improve over baseline, controlling for capacity?** | Attention mechanism (controlled) | `diff_attn_matched` vs. `baseline` (parameter-matched: ~27.83M vs ~27.80M, Δ=0.12%) |
 | **Q5 — Does MLA KV compression hurt at this scale?** | KV bottleneck dimension | `mla` vs. `baseline`; `diff_mla` vs. `diff_attn` |
 
-**Q4 framing:** `diff_attn` is NOT a controlled comparison vs. `baseline`. Doubled Q heads add ~25% more attention parameters (+2.1M = 8 layers × d²). Any BPC difference reflects architecture + capacity combined and cannot attribute improvement to the differential attention mechanism alone. Q4 is an **exploratory observation**, not a hypothesis-driven research question. It is listed here for completeness and to document the confound explicitly. Do not interpret Q4 results as evidence for or against differential attention as a mechanism. **Q5 prior observation:** KV compression at d_c=128 appeared lossy in prior runs; to be confirmed with current codebase.
+**Q4 design:** `diff_attn_matched` uses the full differential attention V2 mechanism with `d_ff=1240` (vs default 1408) to compensate for the extra d² Q projection per layer. Total unique params: ~27.83M vs baseline ~27.80M (Δ=+33K, 0.12% — within noise). `diff_attn` (unmatched, +2.1M) is also run as an **exploratory complement** to Q4: it shows the combined effect of mechanism + capacity and provides an upper bound. Results should be interpreted as: `diff_attn_matched` vs `baseline` = mechanism effect; `diff_attn` vs `diff_attn_matched` = capacity effect. **Q5 prior observation:** KV compression at d_c=128 appeared lossy in prior runs; to be confirmed with current codebase.
 
 ### go-mHC composition study (Q6): Study C
 

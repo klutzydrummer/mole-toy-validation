@@ -56,7 +56,11 @@ class ToyTransformer(nn.Module):
         # MLA KV compression (arXiv:2405.04434, DeepSeek-V2)
         "mla":            dict(use_mhc=False, use_mol=False, use_single_lora=False, use_mla=True,  use_diff_attn=False, use_diff_mla=False, n_streams=1),
         # Differential attention (arXiv:2410.05258, ICLR 2025)
-        "diff_attn":      dict(use_mhc=False, use_mol=False, use_single_lora=False, use_mla=False, use_diff_attn=True,  use_diff_mla=False, n_streams=1),
+        "diff_attn":         dict(use_mhc=False, use_mol=False, use_single_lora=False, use_mla=False, use_diff_attn=True,  use_diff_mla=False, n_streams=1),
+        # Differential attention, parameter-matched to baseline: d_ff=1240 (vs default 1408)
+        # reduces FFN by ~2.06M to compensate for the extra d² Q projection per layer.
+        # Total unique params: ~27.83M (baseline: ~27.80M, Δ=+33K, 0.12%). Controlled Q4.
+        "diff_attn_matched": dict(use_mhc=False, use_mol=False, use_single_lora=False, use_mla=False, use_diff_attn=True,  use_diff_mla=False, n_streams=1),
         # Diff Attention + MLA KV compression (novel composition, no published precedent)
         "diff_mla":       dict(use_mhc=False, use_mol=False, use_single_lora=False, use_mla=False, use_diff_attn=False, use_diff_mla=True,  n_streams=1),
         # go-mHC compositions — Phase 1 composition roadmap (April 2026)
