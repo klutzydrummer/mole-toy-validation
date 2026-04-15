@@ -31,6 +31,14 @@ from utils.data import get_dataloader, get_vocab_size, set_dataset, set_tokenize
 from utils.device import configure_sdpa, get_amp_config, get_device
 from utils.metrics import ParamCounter, TrainLogger, ce_to_bpc
 
+# bitsandbytes: 8-bit optimizer support. Optional — falls back to standard AdamW if not installed.
+# Install: pip install bitsandbytes>=0.42.0  (T4/sm75 supported since 0.39)
+try:
+    import bitsandbytes as bnb
+    HAS_BNB = True
+except ImportError:
+    HAS_BNB = False
+
 # LightningLogger is only available inside Lightning.ai Studios — degrade gracefully elsewhere.
 try:
     from litlogger import LightningLogger as _LightningLogger
@@ -100,6 +108,7 @@ def train(config: str, d: int = 512, n_layers: int = 8, n_heads: int = 8,
           n_experts: int = 8,
           mol_rank: int = 8, mol_top_k: int = 2, d_ff: int = None,
           resume: bool = False, no_compile: bool = False,
+          use_8bit_adam: bool = False, grad_checkpoint: bool = False,
           tokenizer: str = "bpe", dataset: str = "wikitext103",
           teamspace: str = "mole-toy-validation-project",
           seed: int = 42, ckpt_prefix: str = ""):
@@ -129,7 +138,7 @@ def train(config: str, d: int = 512, n_layers: int = 8, n_heads: int = 8,
         print("WARNING: Running on CPU. This will be very slow.")
         print("Switch to GPU in your Lightning.ai Studio settings.\n")
     else:
-        print(f"AMP dtype: {amp_dtype} | GradScaler: {use_grad_scaler} | SDPA: {sdpa_desc}")
+        print(f"AMP dtype: {amp_dtype} | GradScaler: {use_grad_scaler} | SDPA: {sdpa_desc} | grad_checkpoint: {grad_checkpoint}")
 
     # Model
     model = ToyTransformer(
@@ -137,6 +146,7 @@ def train(config: str, d: int = 512, n_layers: int = 8, n_heads: int = 8,
         vocab_size=vocab_size, max_len=seq_len + 64,
         n_experts=n_experts,
         mol_rank=mol_rank, mol_top_k=mol_top_k, d_ff=d_ff,
+        grad_checkpoint=grad_checkpoint,
     ).to(device)
 
     n_params = ParamCounter.count(model)
@@ -147,26 +157,38 @@ def train(config: str, d: int = 512, n_layers: int = 8, n_heads: int = 8,
 
     # Optimizer — param groups differ for nGPT vs standard configs.
     #
-    # nGPT: no weight decay on any parameter. Weight decay conflicts with the
-    # post-step column normalization (arXiv:2410.01131, Section 2.6). Single group.
+    # Optimizer selection: 8-bit AdamW (bitsandbytes) or standard AdamW.
+    # 8-bit Adam quantizes the two float32 moment vectors to int8, reducing optimizer
+    # state memory by ~75%. At 28M params this saves ~170MB; at 300M+ it saves ~2.3GB.
+    # bitsandbytes does not support fused=True — fused is a PyTorch-only kernel path.
+    # T4 (sm75) supported since bitsandbytes 0.39.
     #
-    # Standard: two groups — weight matrices (2D+) get decay=0.1; 1D params
-    # (biases, RMSNorm scales, nn.Parameter vectors) get decay=0.0.
+    # nGPT: no weight decay — conflicts with post-step weight normalization (§2.6).
+    # Standard: 2D+ params get decay=0.1; 1D params (biases, norms, vectors) get 0.0.
+    if use_8bit_adam and not HAS_BNB:
+        print("WARNING: --use_8bit_adam requested but bitsandbytes not installed. "
+              "Falling back to standard AdamW. Install: pip install bitsandbytes>=0.42.0")
+    _use_bnb = use_8bit_adam and HAS_BNB
+    AdamW = bnb.optim.AdamW8bit if _use_bnb else torch.optim.AdamW
+    fused_kw = {} if _use_bnb else {"fused": (device.type == "cuda")}
+
     _model_raw = _unwrap(model)
     if getattr(_model_raw, "use_ngpt", False):
-        optimizer = torch.optim.AdamW(
+        optimizer = AdamW(
             model.parameters(),
             lr=max_lr, betas=(0.9, 0.95), weight_decay=0.0,
-            fused=(device.type == "cuda"),
+            **fused_kw,
         )
     else:
         decay_params   = [p for p in model.parameters() if p.requires_grad and p.ndim >= 2]
         nodecay_params = [p for p in model.parameters() if p.requires_grad and p.ndim < 2]
-        optimizer = torch.optim.AdamW(
+        optimizer = AdamW(
             [{"params": decay_params,   "weight_decay": 0.1},
              {"params": nodecay_params, "weight_decay": 0.0}],
-            lr=max_lr, betas=(0.9, 0.95), fused=(device.type == "cuda"),
+            lr=max_lr, betas=(0.9, 0.95), **fused_kw,
         )
+    if _use_bnb:
+        print("8-bit AdamW (bitsandbytes) enabled")
 
     # Resume — checkpoint names include seed so multi-seed runs don't overwrite each other.
     # e.g. baseline_seed42_latest.pt, baseline_seed42_best.pt
@@ -420,6 +442,12 @@ if __name__ == "__main__":
                              "Use for scale variants, e.g. 'baseline_d768_seed42'.")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--no_compile", action="store_true")
+    parser.add_argument("--use_8bit_adam", action="store_true",
+                        help="Use 8-bit AdamW (bitsandbytes) to reduce optimizer state memory "
+                             "by ~75%%. Requires: pip install bitsandbytes>=0.42.0. T4/sm75 supported.")
+    parser.add_argument("--grad_checkpoint", action="store_true",
+                        help="Enable gradient checkpointing — recompute activations during backward "
+                             "instead of caching them. Reduces activation memory at ~30-40%% compute cost.")
     parser.add_argument("--seed", type=int, default=42,
                         help="Global random seed for reproducibility (torch, cuda, numpy, random).")
     parser.add_argument("--teamspace", type=str, default="mole-toy-validation-project",

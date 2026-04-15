@@ -1,6 +1,7 @@
 # Pinned from Lightning.ai T4 environment (pip freeze 2026-03-23).
 # Update by running: pip freeze | grep -E "torch|numpy|matplotlib|tqdm|sentencepiece|litlogger"
 torch==2.8.0+cu128
+bitsandbytes>=0.42.0
 numpy==1.26.4
 matplotlib==3.8.2
 tqdm==4.67.3

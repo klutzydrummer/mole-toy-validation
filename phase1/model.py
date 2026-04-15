@@ -18,6 +18,7 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint
 
 # Re-export all components so existing callsites continue to work unchanged:
 #   from phase1.model import RMSNorm, TransformerBlock   ← phase2/model.py
@@ -81,7 +82,8 @@ class ToyTransformer(nn.Module):
     def __init__(self, config: str = "baseline", d: int = 256, n_layers: int = 8,
                  n_heads: int = 8, vocab_size: int = 256, max_len: int = 2048,
                  n_experts: int = 8,
-                 mol_rank: int = 8, mol_top_k: int = 2, d_ff: int = None):
+                 mol_rank: int = 8, mol_top_k: int = 2, d_ff: int = None,
+                 grad_checkpoint: bool = False):
         super().__init__()
 
         cfg = self.CONFIGS[config]
@@ -90,6 +92,7 @@ class ToyTransformer(nn.Module):
         self.use_ngpt = cfg.get("use_ngpt", False)
         self.n_streams = cfg["n_streams"]
         self.d = d
+        self.grad_checkpoint = grad_checkpoint
 
         self.embed = nn.Embedding(vocab_size, d)
 
@@ -164,7 +167,10 @@ class ToyTransformer(nn.Module):
             h = h.unsqueeze(2).expand(-1, -1, self.n_streams, -1).clone()
 
         for block in self.blocks:
-            h = block(h)
+            if self.grad_checkpoint and self.training:
+                h = checkpoint(block, h, use_reentrant=False)
+            else:
+                h = block(h)
 
         if self.use_mhc and self.n_streams > 1:
             w = F.softmax(self.stream_collapse_logits, dim=0)
