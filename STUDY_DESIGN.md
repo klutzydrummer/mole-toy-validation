@@ -123,24 +123,77 @@ on Phase 1 — they train for different step counts (50k vs. 100k). Use
 
 ## 3. Active Parameters and FLOPs (per token)
 
-For transparency, the following should be computed and reported for every config:
+For transparency, the following should be computed and reported for every config.
+Param counts are unique parameters (tied lm_head/embedding counted once); verified via
+`utils/shape_check.py` at d=512, vocab=4096.
+
+### Study A — MoLE core
 
 | Config | Total params | Active params/token | Approx. FFN FLOPs/token |
 |--------|-------------|--------------------|-----------------------|
 | `baseline` | 27.8M | 27.8M | 2 × d × d_ff = 1.44M |
-| `baseline_wide` | 30.2M | 30.2M | ~1.56M |
-| `mol` | 31.1M | ~28.9M* | ~1.50M* |
-| `mol_single` | 31.1M | 31.1M | ~1.48M* |
-| `mhc` | 27.8M | 27.8M | same as baseline |
-| `compose` | 31.1M | ~28.9M | ~1.50M |
+| `baseline_wide` | 30.2M | 30.2M | 2 × 512 × 1600 = 1.64M |
+| `mol` | 31.1M | ~28.9M† | ~1.50M† |
+| `mol_single` | 31.1M | 31.1M | ~1.48M† |
+| `mhc` | 28.0M | 28.0M | 1.44M + go-mHC overhead‡ |
+| `compose` | 31.4M | ~29.2M† | ~1.50M + go-mHC overhead‡ |
 
-*MoL active params = base FFN + shared LoRA + 2 selected expert LoRAs + router.
-The shared base FFN dominates; LoRA overhead is ~6% of total FFN FLOPs.
+†MoL active params = base FFN + shared LoRA + 2 selected expert LoRAs + router.
+6 unselected expert LoRAs are trained but inactive per token (2,211,840 inactive params).
+The shared base FFN dominates; active LoRA overhead is ~6% of total FFN FLOPs.
+
+‡go-mHC overhead per token: mean-pool → Linear(512, 28) → skew → Cayley solve (8×8) →
+block Frobenius. n=4, s=2, ns=8. Plus H_pre/H_post softmax (4 values each). Not negligible
+but sub-dominant vs. attention and FFN at d=512.
 
 **Key insight**: MoL's active-param/FLOPs cost is close to baseline (~6% overhead), not 12%
-more. The 3.35M extra total params are almost entirely in the 6 non-selected expert LoRAs
-that are trained but inactive at inference. This means Q1 (capacity control) matters more
-than Q3 (FLOPs control) for interpreting MoL's result.
+more. The extra total params are almost entirely in non-selected expert LoRAs that are trained
+but inactive at inference. Q1 (capacity control) matters more than FLOPs control for
+interpreting MoL's result.
+
+### Study B — Attention variants
+
+| Config | Total params | Active params/token | Approx. FFN FLOPs/token | Attention note |
+|--------|-------------|--------------------|-----------------------|---------------|
+| `mla` | 27.4M | 27.4M | 1.44M | KV latent d_c=128 (25% of d) |
+| `diff_attn` | 29.9M | 29.9M | 1.44M | +2.1M vs baseline: doubled Q heads |
+| `diff_mla` | 26.3M | 26.3M | 1.44M | MLA KV compression + diff Q (no per-head norm) |
+
+**diff_attn capacity confound:** The +2.1M over baseline (8 layers × d² extra Q params = 2,097,152)
+is an uncontrolled capacity advantage. Q4 comparisons must acknowledge this — any BPC
+improvement over `baseline` reflects both architecture and capacity.
+
+### Study C — go-mHC compositions
+
+| Config | Total params | Active params/token | Approx. FFN FLOPs/token |
+|--------|-------------|--------------------|-----------------------|
+| `diff_mhc` | 30.2M | 30.2M | 1.44M + go-mHC overhead |
+| `mla_mhc` | 27.6M | 27.6M | 1.44M + go-mHC overhead |
+| `diff_mla_mhc` | 26.5M | 26.5M | 1.44M + go-mHC overhead |
+
+Each adds ~230K go-mHC params over its non-mHC counterpart (8 layers × 2 HyperConnections
+× ~14,400 params each, plus stream_collapse_logits).
+
+### Study D — nGPT hyperspherical
+
+| Config | Total params | Active params/token | Approx. FFN FLOPs/token |
+|--------|-------------|--------------------|-----------------------|
+| `ngpt` | 27.8M | 27.8M | 1.44M |
+| `ngpt_mla` | 27.4M | 27.4M | 1.44M |
+| `ngpt_diff_attn` | 29.9M | 29.9M | 1.44M |
+
+nGPT adds ~8,200 params over the corresponding non-nGPT config: 8 layers × 2 sublayers ×
+d=512 α parameters + 1 scalar s_z. Negligible overhead.
+
+### Study E — Multi-sphere compositions
+
+| Config | Total params | Active params/token | Approx. FFN FLOPs/token |
+|--------|-------------|--------------------|-----------------------|
+| `ngpt_mhc_a` | 28.1M | 28.1M | 1.44M + go-mHC overhead |
+| `ngpt_mhc_c` | 28.1M | 28.1M | 1.44M + go-mHC overhead |
+
+Identical param counts — the two variants differ in where the L2Norm renorm is applied
+within the mHC block, not in the number of parameters.
 
 ---
 
@@ -191,12 +244,23 @@ than Q3 (FLOPs control) for interpreting MoL's result.
 ### Scaling study (cross-cutting)
 
 5 configs × {d=256, d=768}: `baseline`, `mla`, `diff_attn`, `diff_mla`, `mol`.
-Checkpoint prefix: `{cfg}_d{d}_seed42`. Goal: determine whether MLA's Q5 deficit is
-ratio-driven or absolute-dimension-driven.
+Checkpoint prefix: `{cfg}_d{d}_seed42`.
 
-**MLA scaling caveat:** d_c/d=25% is held constant at all scales. At d=256, d_c=64;
-at d=512, d_c=128; at d=768, d_c=192. Both ratio and absolute bottleneck size vary
-proportionally with d — cannot independently isolate the two effects.
+**Research question (restated):** How does each architecture's BPC, relative to the
+`baseline` at the same scale, change as model size scales from d=256 (~6M) to d=512
+(~28M) to d=768 (~58M)? Specifically: does MLA's KV compression deficit (Q5) grow,
+shrink, or remain constant in absolute BPC terms as model size increases?
+
+**What this design cannot answer:** d_c/d=25% is held constant at all scales
+(d=256→d_c=64, d=512→d_c=128, d=768→d_c=192). Both the ratio and the absolute
+bottleneck dimension increase proportionally with d. The study cannot isolate whether
+MLA's performance is ratio-driven or absolute-dimension-driven — both effects are
+confounded. To isolate them would require a fixed-d_c run (e.g., d=768 with d_c=128
+keeps absolute dimension constant while ratio shrinks). That run is not scheduled.
+
+**Correct framing for any write-up:** Report "MLA BPC deficit vs. baseline at each
+scale" and note whether the deficit is stable, growing, or shrinking. Do not claim
+this isolates ratio vs. absolute dimension effects.
 
 ### Phase 2 — outer encoder study (Q3)
 
@@ -213,7 +277,11 @@ Based on literature consensus (Melis et al. 2018, NLP ablation practice):
 **Minimum**: 3 seeds for any config used in a primary claim.
 **Primary claims** (Q1, Q2): `baseline`, `baseline_wide`, `mol`, `mol_single` — all need 3 seeds.
 **Supporting configs** (`mhc`, `compose`): 1 seed until optimization issues are resolved.
-**Phase 2**: 3 seeds for `outer_crl_learned` (primary A1 config); 1 seed for all others.
+**Phase 2**: 3 seeds for both `outer_crl_learned` (treatment) AND `outer_crl_fixed_stride`
+(control). Running the treatment at 3 seeds and the control at 1 seed makes the
+"margin > 3× std" criterion asymmetric — variance is known for the treatment but unknown
+for the control. An n=1 control is not a defensible control arm. All other Phase 2 configs:
+1 seed.
 
 **Checkpoint policy for multi-seed comparisons**: Use **final-step BPC** (not best-checkpoint BPC) when computing cross-seed standard deviation and the "margin > 3× std" criterion. Best-checkpoint selection introduces an implicit hyperparameter search over checkpoint index; variance computed over best-BPC values across seeds conflates architecture quality with checkpoint selection luck. Best-checkpoint BPC may be reported separately as a secondary metric but must not be used for the primary margin calculation.
 
@@ -242,6 +310,21 @@ Based on literature consensus (Melis et al. 2018, NLP ablation practice):
 ### For MoL configs only
 - Expert load balance (routing entropy): should be close to log(8)=2.08 bits at convergence
 - Expert counts distribution: report as a table in checkpoints/report.md
+
+### For Study D and E configs (nGPT and nGPT+mHC)
+nGPT's primary published claim is convergence speedup (4–20× fewer steps, arXiv:2410.01131),
+not final BPC at matched step count. A step-100k BPC comparison may miss the speedup
+entirely if both models saturate before 100k steps.
+
+**Required additional reporting for `ngpt`, `ngpt_mla`, `ngpt_diff_attn`, `ngpt_mhc_a`,
+`ngpt_mhc_c` and their non-nGPT matched baselines:**
+- BPC at steps 5k, 10k, 25k, 50k, 100k (already logged every 2500 steps; extract from JSONL)
+- **Steps to reach baseline final BPC** — the step at which the nGPT config first matches
+  its matched baseline's step-100k BPC. If never reached, report "not achieved within 100k."
+
+This metric distinguishes "nGPT converges faster but saturates at the same BPC" from
+"nGPT reaches a better final BPC" from "nGPT does not help at this scale." These are
+different conclusions with different implications.
 
 ### For Phase 2 HDC configs
 - `compression_ratio` mean and std across training steps
@@ -353,12 +436,96 @@ mHC diagnostic (prerequisite for 3-seed A, C, E):
 - outer_crl_learned BPC ≈ outer_strided BPC → routing adds no value; compression mechanism is what matters
 - outer_crl_learned BPC > outer_strided BPC → learned routing is actively harmful at this scale
 
+### Q8 answer (ngpt_mhc_a vs. ngpt_mhc_c — same params, different manifold structure)
+
+**Theoretical motivation:** In `ngpt_mhc_a` (multi-sphere), each of the n=4 streams is
+independently renormalized to S^{d-1} after every LERP step. The go-mHC H_res mixing
+between streams is a doubly-stochastic convex combination of points on their respective
+hyperspheres, and each stream's α learns its own update rate. In `ngpt_mhc_c`
+(wrap-sublayer), the full mHC block is treated as a single sublayer: the sphere constraint
+is enforced once at the block output, not stream-by-stream.
+
+**Directional prediction (falsifiable):** `ngpt_mhc_a` should perform better if
+per-stream sphere geometry provides a meaningful inductive bias — specifically, if
+maintaining each stream on S^{d-1} throughout the mixing step reduces the effective
+search space and improves optimization. This prediction is supported by the spectral-sphere
+framing in sHC (arXiv:2603.20896), which argues that negative curvature interactions are
+beneficial when hidden states are sphere-constrained. It is also consistent with the
+product manifold hypothesis (arXiv:2412.07033) that factored geometry improves attention.
+
+`ngpt_mhc_c` should perform better (or match) if the per-stream renorm is unnecessary
+overhead — i.e., if the single block-level renorm provides sufficient spherical
+regularization and the intra-block stream geometry is irrelevant.
+
+**Interpretation table:**
+
+| Outcome | Interpretation | Implication |
+|---------|---------------|-------------|
+| ngpt_mhc_a BPC < ngpt_mhc_c by >3σ | Per-stream sphere geometry adds value | Multi-sphere product manifold inductive bias is beneficial at this scale |
+| ngpt_mhc_a ≈ ngpt_mhc_c (within 3σ) | Manifold structure within mHC block is irrelevant | Sphere constraint only needs to be applied at block boundaries; interior geometry is noise |
+| ngpt_mhc_c BPC < ngpt_mhc_a by >3σ | Per-stream renorm hurts | Forcing each stream to stay on S^{d-1} after every LERP is over-constraining at this scale |
+
+**Exploratory note:** Both variants are novel with no published direct precedent.
+The closest precedents (sHC, PM-Transformer, JPmHC) are cited in `references/components/ngpt.md`
+but do not compose go-mHC with nGPT directly. Q8 is exploratory — a positive finding for
+either variant motivates the composition but does not establish a general principle without
+replication at larger scale.
+
 ### Cross-question interpretation
 If Q1 shows mol ≈ baseline_wide (capacity explains the gain) AND Q2 shows mol < mol_single
 (routing helps over high-rank adapters), then the conclusion is: MoL's architecture benefits
 from both routing AND the specific LoRA factorization, but a wider dense baseline achieves
 the same BPC without the complexity — and the architecture advantage is in efficiency (same
 BPC at lower active FLOPs), not in raw quality.
+
+---
+
+## 11. Resource Allocation and Prioritization
+
+### Estimated compute (Lightning.ai T4, single GPU)
+
+| Study | Configs | Est. T4 hours | Status |
+|-------|---------|--------------|--------|
+| Study A — MoLE core (Q1, Q2) | 6 × 100k steps | ~12–15h | Seed42 complete |
+| Study B — Attention variants (Q4, Q5) | 3 × 100k steps | ~6–8h | Seed42 complete |
+| Study C — go-mHC compositions (Q6) | 3 × 100k steps | ~8–10h | Pending |
+| Study D — nGPT hyperspherical (Q7) | 3 × 100k steps | ~7–9h | Pending |
+| Study E — Multi-sphere compositions (Q8) | 2 × 100k steps | ~5–7h | Pending |
+| Phase 2 — Outer encoder (Q3) | 10 × 50k steps | ~10–15h | Pending |
+| Scaling study | 10 × 100k steps | ~20–25h | Pending |
+| Multi-seed reruns (A primary claims) | 6 configs × 2 more seeds | ~12–15h | Pending |
+
+**Total estimated:** ~80–105 T4-hours for full execution.
+
+### Priority order if compute is constrained
+
+The following order maximizes scientific value per compute-hour:
+
+**Priority 1 — Required for any publishable result:**
+- Study A multi-seed reruns (Q1, Q2): currently single-seed; results are preliminary
+- Study B seed42 is complete; no multi-seed required for primary claims
+- Phase 2 Study F (Q3): requires Study A mol result confirmed — run `outer_crl` first
+
+**Priority 2 — High value, independent:**
+- Study D (Q7, nGPT): independent of C; tests a well-motivated published claim
+- Study C (Q6, go-mHC compositions): requires mHC diagnostic to be resolved first
+
+**Priority 3 — Exploratory, conditioned on prior studies:**
+- Study E (Q8, multi-sphere): requires Study D nGPT baseline; novel, no prior precedent
+- Scaling study: independent but long; only relevant after primary studies confirm trends
+
+**Minimum viable result set** (if only Priority 1 completes):
+Studies A (multi-seed) + B (seed42) answer Q1, Q2, Q4, Q5. Phase 2 answers Q3. This
+constitutes a complete, publishable MoLE validation. Studies C–E and the scaling study
+are extensions, not prerequisites.
+
+### Compute risk flags
+
+- **Study A multi-seed mHC/compose**: blocked until mHC grad norm is diagnosed (see §9
+  mHC diagnostic). Do not run 3-seed mHC or compose until diagnostic LR sweeps complete.
+- **Study C**: same block — go-mHC compositions depend on understanding the mHC baseline.
+- **Scaling study**: at ~20–25h it is the single most expensive study and answers the
+  narrowest question. Schedule last.
 
 ---
 
