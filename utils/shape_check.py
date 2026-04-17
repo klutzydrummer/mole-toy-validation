@@ -70,6 +70,17 @@ def check_phase1():
         # nGPT + mHC compositions
         ("ngpt_mhc_a",     {}),
         ("ngpt_mhc_c",     {}),
+        # Study F — composition gap fills (April 2026)
+        ("ngpt_diff_mla",         {}),
+        ("diff_attn_matched_mhc", {"d_ff": 1240}),
+        ("mol_mla",               {}),
+        ("mol_diff_attn_matched",  {"d_ff": 1240}),
+        ("ngpt_mol",              {}),
+        # Study F additions (April 2026)
+        ("mol_diff_mla",               {}),
+        ("ngpt_diff_attn_matched",     {"d_ff": 1240}),
+        ("ngpt_diff_mla_mhc",         {}),
+        ("mol_diff_mla_mhc",          {}),
     ]
 
     results = []

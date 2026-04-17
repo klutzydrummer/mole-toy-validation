@@ -175,47 +175,70 @@ out = (attn1 - lam * attn2).transpose(1, 2).reshape(B, L, D)
 return self.out(out)
 ```
 
-### DiffMLAAttention — novel composition (phase1/components/diff_attention.py:116–147)
+### DiffMLAAttention — novel composition (updated April 2026)
 
-KV and Q paths follow MLA (Eq. 9–13 from arXiv:2405.04434), then Diff V2 differential:
+Updated to match the April 2026 MLA spec (see mla_attention.md): d_c=d//2, decoupled RoPE
+(Eq. 14-19), RMSNorm at both latent bottlenecks.
+
+KV and Q paths follow updated MLA spec, then Diff V2 differential:
 
 ```python
-# MLA KV compression
-self.W_DKV = nn.Linear(d, d_c, bias=False)        # d_c = d//4 = 128 at d=512
-self.W_UK  = nn.Linear(d_c, nh * dh, bias=False)  # single K (not doubled)
-self.W_UV  = nn.Linear(d_c, nh * dh, bias=False)  # standard V (V2: not double-wide)
+# MLA KV compression with RMSNorm (Eq. 9-11)
+self.W_DKV  = nn.Linear(d, d_c, bias=False)         # d_c = d//2 = 256 at d=512
+self.kv_norm = RMSNorm(d_c)
+self.W_UK   = nn.Linear(d_c, nh * dh, bias=False)   # single K
+self.W_UV   = nn.Linear(d_c, nh * dh, bias=False)   # standard V (V2: not double-wide)
 
-# MLA Q: doubled for Diff V2 GQA pairing
-self.W_DQ  = nn.Linear(d, d_c_q, bias=False)      # d_c_q = d//2 = 256 at d=512
-self.W_UQ  = nn.Linear(d_c_q, 2 * nh * dh, bias=False)  # 2h heads
+# MLA Q: doubled for Diff V2 GQA pairing, with RMSNorm (Eq. 12-13)
+self.W_DQ   = nn.Linear(d, d_c_q, bias=False)       # d_c_q = d//2 = 256 at d=512
+self.q_norm  = RMSNorm(d_c_q)
+self.W_UQ   = nn.Linear(d_c_q, 2 * nh * dh, bias=False)   # 2h content heads
+
+# Decoupled RoPE (Eq. 14-15)
+self.W_QR   = nn.Linear(d_c_q, 2 * nh * d_h_R, bias=False)  # 2×nh — matches doubled Q
+self.W_KR   = nn.Linear(d, d_h_R, bias=False)                 # single shared positional key
 
 # Token-specific λ (Diff V2)
 self.W_lambda = nn.Linear(d, nh, bias=True)
 ```
 
-Forward (phase1/components/diff_attention.py:149–177):
+Where `d_h_R = d_head // 2` (= 32 at d=512). RoPE buffers use `precompute_rope(d_h_R, max_len)`.
+
+Forward key structure:
 ```python
-c_kv = self.W_DKV(x)
-k = self.W_UK(c_kv).reshape(B, L, nh, dh).transpose(1, 2)
-v = self.W_UV(c_kv).reshape(B, L, nh, dh).transpose(1, 2)
+# KV: compress → norm → expand
+c_kv  = self.kv_norm(self.W_DKV(x))
+k_c   = self.W_UK(c_kv).reshape(B, L, nh, dh).transpose(1, 2)         # [B, nh, L, dh]
+v     = self.W_UV(c_kv).reshape(B, L, nh, dh).transpose(1, 2)
 
-c_q = self.W_DQ(x)
-q   = self.W_UQ(c_q).reshape(B, L, 2 * nh, dh).transpose(1, 2)
+# Q: compress → norm → doubled expand
+c_q   = self.q_norm(self.W_DQ(x))
+q_c   = self.W_UQ(c_q).reshape(B, L, 2*nh, dh).transpose(1, 2)       # [B, 2nh, L, dh]
 
-q = apply_rope(q, self.rope_cos, self.rope_sin)
-k = apply_rope(k, self.rope_cos, self.rope_sin)
+# Decoupled RoPE
+q_rope = apply_rope(self.W_QR(c_q).reshape(B, L, 2*nh, d_h_R).transpose(1,2), ...)
+k_rope = apply_rope(self.W_KR(x).reshape(B, L, 1, d_h_R).transpose(1,2), ...).expand(B,nh,L,d_h_R)
 
-k_rep = k.repeat_interleave(2, dim=1)
-v_rep = v.repeat_interleave(2, dim=1)
+# Concatenate content + positional (Eq. 16-17)
+q      = torch.cat([q_c, q_rope], dim=-1)       # [B, 2nh, L, dh + d_h_R]
+k_full = torch.cat([k_c, k_rope], dim=-1)       # [B, nh,  L, dh + d_h_R]
+
+# GQA pairing; V not rotated (V is indexed by head dim dh)
+k_rep = k_full.repeat_interleave(2, dim=1)      # [B, 2nh, L, dh + d_h_R]
+v_rep = v.repeat_interleave(2, dim=1)           # [B, 2nh, L, dh]
 
 attn = F.scaled_dot_product_attention(q, k_rep, v_rep, is_causal=True)
-attn1 = attn[:, 0::2]
+# SDPA returns V's head dim: [B, 2nh, L, dh]
+attn1 = attn[:, 0::2]    # [B, nh, L, dh]
 attn2 = attn[:, 1::2]
-
-lam = torch.sigmoid(self.W_lambda(x)).transpose(1, 2).unsqueeze(-1)
-out = (attn1 - lam * attn2).transpose(1, 2).reshape(B, L, D)
+lam   = torch.sigmoid(self.W_lambda(x)).transpose(1, 2).unsqueeze(-1)
+out   = (attn1 - lam * attn2).transpose(1, 2).reshape(B, L, D)
 return self.out(out)
 ```
+
+**Note on W_QR:** In standalone MLA, W_QR maps `d_c_q → nh × d_h_R` (one positional vector per head).
+In DiffMLAAttention, Q is doubled to 2h heads, so W_QR maps `d_c_q → 2×nh × d_h_R`. This ensures
+each of the 2nh query half-heads gets its own positional component.
 
 ### Intentional deviations from V2 blog reference
 
@@ -226,7 +249,9 @@ return self.out(out)
 | Both | `layer_idx` parameter kept in signature but unused | API compatibility; V1 used layer_idx for λ_init; V2 eliminates λ_init, so layer_idx is irrelevant in V2 |
 | `DiffMLAAttention` | V is standard width d_h (not double-wide) | Correct for V2; V1 used 2·d_h |
 | `DiffMLAAttention` | KV compressed via MLA latent; Q compressed via separate MLA latent | Novel composition; no published precedent. K and V still share a KV latent (MLA Eq. 9–11) |
-| `DiffMLAAttention` | No RMSNorm on latents | Same rationale as `MLACausalAttention` (see mla_attention.md) |
+| `DiffMLAAttention` | d_c = d//2 (not d//4) | April 2026: d//4 causes ~4.4% degradation per arXiv:2506.09342. d//2 is near-parity (+0.3%). Matches updated standalone MLA. |
+| `DiffMLAAttention` | Decoupled RoPE (Eq. 14-19) included | April 2026: without decoupled RoPE, MLA degrades ~3% vs MHA. W_QR produces 2×nh positional queries to match doubled Q. |
+| `DiffMLAAttention` | RMSNorm at both latents | April 2026: paper recommendation for training stability. Matches updated standalone MLA. |
 
 ---
 
@@ -261,22 +286,27 @@ return self.out(out)
 8. **Output shape**: Confirm `(attn1 - lam * attn2)` at line 224 has shape `[B, n_heads, L, d_head]`,
    and `.transpose(1, 2).reshape(B, L, D)` collapses to `[B, L, D]` where `D = n_heads * d_head`.
 
-### DiffMLAAttention
+### DiffMLAAttention (updated April 2026)
 
-9. **KV shared latent**: Confirm `self.W_DKV` at line 265, `self.W_UK` at line 266, and
-   `self.W_UV` at line 267 exist; and that `k = self.W_UK(c_kv)` and `v = self.W_UV(c_kv)` at
-   lines 288–289 both operate on the same `c_kv = self.W_DKV(x)` at line 287.
+9. **KV shared latent with RMSNorm**: Confirm `self.kv_norm = RMSNorm(d_c)` applied to
+   `self.W_DKV(x)` before W_UK/W_UV. `d_c = d//2` (not d//4).
 
-10. **Doubled Q via MLA**: Confirm `self.W_UQ = nn.Linear(d_c_q, 2 * nh * dh, bias=False)` at
-    line 271 — the up-projection produces 2h heads, not h heads.
+10. **Q latent with RMSNorm**: Confirm `self.q_norm = RMSNorm(d_c_q)` applied to `self.W_DQ(x)`.
+    `self.W_UQ` maps `d_c_q → 2 * nh * dh` (doubled Q heads).
 
-11. **K and V standard width in DiffMLAAttention**: Confirm `self.W_UK = nn.Linear(d_c, nh * dh)` at
-    line 266 (output dim = n_heads * d_head, not 2 * n_heads * d_head). V is not double-wide.
+11. **K and V standard width**: Confirm `self.W_UK = nn.Linear(d_c, nh * dh)` — V is not double-wide.
 
-12. **Same GQA pairing correctness in DiffMLAAttention**: Confirm `k.repeat_interleave(2, dim=1)`
-    at line 299 and `attn[:, 0::2]` at line 304 — same correct interleaved split as
-    `DifferentialCausalAttention`.
+12. **Decoupled RoPE projections**: Confirm `self.W_QR = nn.Linear(d_c_q, 2 * nh * d_h_R)` (maps to
+    2×nh positional vectors, one per doubled Q half-head) and `self.W_KR = nn.Linear(d, d_h_R)`.
+    RoPE buffers use `precompute_rope(d_h_R, max_len)` — sized for d_h_R, not d_head.
 
-13. **W_lambda same spec in both classes**: Confirm `nn.Linear(d, n_heads, bias=True)` at line 274.
-    Same specification as `DifferentialCausalAttention` line 189 — token-specific, head-specific,
-    sigmoid-bounded.
+13. **Decoupled RoPE forward**: Confirm `q = torch.cat([q_c, q_rope], dim=-1)` and
+    `k_full = torch.cat([k_c, k_rope], dim=-1)` — head dim becomes dh + d_h_R for Q and K.
+    V is NOT rotated. SDPA output has head dim dh (V's dim), so `reshape(B, L, D)` is valid.
+
+14. **GQA pairing correctness**: Confirm `k_full.repeat_interleave(2, dim=1)` (not `k`) is used for
+    k_rep, so the full concatenated K (content+positional) is repeated, not just content.
+    Confirm `attn[:, 0::2]` and `attn[:, 1::2]` for the interleaved split.
+
+15. **W_lambda same spec as DifferentialCausalAttention**: Confirm `nn.Linear(d, n_heads, bias=True)` —
+    token-specific, head-specific, sigmoid-bounded.

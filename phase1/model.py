@@ -35,6 +35,7 @@ from phase1.components.mol_ffn import LoRAAdapter, MoLFFN, SingleLoRAFFN  # noqa
 from phase1.components.ngpt import (  # noqa: F401
     NGPTCausalAttention,
     NGPTDiffCausalAttention,
+    NGPTDiffMLAAttention,
     NGPTMLACausalAttention,
     l2_norm,
     normalize_ngpt_weights,
@@ -77,6 +78,24 @@ class ToyTransformer(nn.Module):
         # C: nGPT-around-sublayer — full mHC block treated as sublayer, α wraps the block
         "ngpt_mhc_a":    dict(use_mhc=True,  use_mol=False, use_single_lora=False, use_mla=False, use_diff_attn=False, use_diff_mla=False, use_ngpt=True,  n_streams=4, ngpt_mhc_variant="a"),
         "ngpt_mhc_c":    dict(use_mhc=True,  use_mol=False, use_single_lora=False, use_mla=False, use_diff_attn=False, use_diff_mla=False, use_ngpt=True,  n_streams=4, ngpt_mhc_variant="c"),
+        # Study F — composition gap fills (April 2026)
+        # Completes the nGPT × attention grid (baseline/mla/diff_attn already covered)
+        "ngpt_diff_mla":         dict(use_mhc=False, use_mol=False, use_single_lora=False, use_mla=False, use_diff_attn=False, use_diff_mla=True,  use_ngpt=True,  n_streams=1),
+        # Controlled diff_attn_matched + mHC (parameter-matched via d_ff=1240 in run_experiments.sh)
+        "diff_attn_matched_mhc": dict(use_mhc=True,  use_mol=False, use_single_lora=False, use_mla=False, use_diff_attn=True,  use_diff_mla=False, n_streams=4),
+        # MoL × attention cross-studies
+        "mol_mla":               dict(use_mhc=False, use_mol=True,  use_single_lora=False, use_mla=True,  use_diff_attn=False, use_diff_mla=False, n_streams=1),
+        "mol_diff_attn_matched": dict(use_mhc=False, use_mol=True,  use_single_lora=False, use_mla=False, use_diff_attn=True,  use_diff_mla=False, n_streams=1),
+        # nGPT + MoL: unit-norm constraint makes routing = cosine similarity (direction-based)
+        "ngpt_mol":              dict(use_mhc=False, use_mol=True,  use_single_lora=False, use_mla=False, use_diff_attn=False, use_diff_mla=False, use_ngpt=True,  n_streams=1),
+        # Completes MoL × attention grid
+        "mol_diff_mla":          dict(use_mhc=False, use_mol=True,  use_single_lora=False, use_mla=False, use_diff_attn=False, use_diff_mla=True,  n_streams=1),
+        # nGPT + diff_attn_matched: controlled Q4 under unit-norm constraint (d_ff=1240 in run_experiments.sh)
+        "ngpt_diff_attn_matched": dict(use_mhc=False, use_mol=False, use_single_lora=False, use_mla=False, use_diff_attn=True,  use_diff_mla=False, use_ngpt=True,  n_streams=1),
+        # Three-way: nGPT + DiffMLA + go-mHC (variant "a": multi-sphere, per-stream α)
+        "ngpt_diff_mla_mhc":     dict(use_mhc=True,  use_mol=False, use_single_lora=False, use_mla=False, use_diff_attn=False, use_diff_mla=True,  use_ngpt=True,  n_streams=4, ngpt_mhc_variant="a"),
+        # Three-way: MoL + DiffMLA + go-mHC
+        "mol_diff_mla_mhc":      dict(use_mhc=True,  use_mol=True,  use_single_lora=False, use_mla=False, use_diff_attn=False, use_diff_mla=True,  n_streams=4),
     }
 
     def __init__(self, config: str = "baseline", d: int = 256, n_layers: int = 8,

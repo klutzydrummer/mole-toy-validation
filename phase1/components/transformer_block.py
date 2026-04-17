@@ -20,6 +20,7 @@ from phase1.components.mol_ffn import MoLFFN, SingleLoRAFFN
 from phase1.components.ngpt import (  # noqa: F401
     NGPTCausalAttention,
     NGPTDiffCausalAttention,
+    NGPTDiffMLAAttention,
     NGPTMLACausalAttention,
     l2_norm,
 )
@@ -50,8 +51,9 @@ class TransformerBlock(nn.Module):
         self.norm2 = RMSNorm(d)
 
         # Attention class selection: nGPT variants take priority for ngpt configs.
-        # use_diff_mla has no nGPT variant (not in initial roadmap).
-        if use_diff_mla:
+        if use_ngpt and use_diff_mla:
+            self.attn = NGPTDiffMLAAttention(d, n_heads, layer_idx=layer_idx, max_len=max_len)
+        elif use_diff_mla:
             self.attn = DiffMLAAttention(d, n_heads, layer_idx=layer_idx, max_len=max_len)
         elif use_ngpt and use_mla:
             self.attn = NGPTMLACausalAttention(d, n_heads, max_len=max_len)

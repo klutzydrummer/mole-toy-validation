@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Phase 1 toy validation of the MoLE architecture (Mixture-of-LoRAs Encoder) on WikiText-103 (BPE, vocab=4096). Phase 2 (HDC) wraps the mol inner network with Zone E and Zone D for content-aware compression.
 
-**Phase 1 configs (18 total across 5 study groups, d=512 ~28M params):**
+**Phase 1 configs (27 total across 6 study groups, d=512 ~28M params):**
 
 | Study | Configs | Research question |
 |-------|---------|------------------|
@@ -15,6 +15,7 @@ Phase 1 toy validation of the MoLE architecture (Mixture-of-LoRAs Encoder) on Wi
 | C — mHC compose | `diff_mhc`, `mla_mhc`, `diff_mla_mhc` | Q6: mHC + attention variant compositions |
 | D — nGPT | `ngpt`, `ngpt_mla`, `ngpt_diff_attn` | Q7: hyperspherical constraint benefit |
 | E — Multi-sphere | `ngpt_mhc_a`, `ngpt_mhc_c` | Q8: multi-sphere vs. wrap-sublayer mHC |
+| F — Compositions | `ngpt_diff_mla`, `diff_attn_matched_mhc`, `mol_mla`, `mol_diff_attn_matched`, `ngpt_mol`, `mol_diff_mla`, `ngpt_diff_attn_matched`, `ngpt_diff_mla_mhc`, `mol_diff_mla_mhc` | Composition gap fills: nGPT grid, controlled mHC, MoL×attention, direction-based routing, three-way |
 
 Use `bash run_experiments.sh study_<name>` to run a single study group (e.g. `study_ngpt`).
 See `STUDY_DESIGN.md` for research questions, controls, and execution order.

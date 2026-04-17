@@ -240,6 +240,113 @@ class NGPTDiffCausalAttention(nn.Module):
         return self.out(out)
 
 
+class NGPTDiffMLAAttention(nn.Module):
+    """
+    nGPT Differential Attention V2 + MLA KV compression (arXiv:2410.01131 + novel composition).
+
+    Mirrors the updated DiffMLAAttention with nGPT modifications:
+      - No kv_norm / q_norm (input already unit-norm in nGPT forward path)
+      - Q ([B, 2nh, L, dh+d_h_R]) and K ([B, nh, L, dh+d_h_R]) L2-normalized per head
+        after content+positional concatenation (dim=-1)
+      - Inverted attention scale: s_qk init = √(dh + d_h_R) for the full concatenated head dim
+      - SDPA: F.scaled_dot_product_attention(q * s_qk, k_rep, v_rep, is_causal=True, scale=1.0)
+      - sigmoid λ unchanged (scalar blend, not a spherical projection)
+
+    Decoupled RoPE follows DiffMLAAttention (W_QR → 2×nh positional queries, W_KR → shared key).
+    All other DiffMLAAttention mechanics unchanged: KV latent compression (d_c=d//2),
+    doubled Q via latent (W_DQ→W_UQ, 2h heads), GQA pairing via repeat_interleave.
+    """
+
+    def __init__(self, d: int, n_heads: int, layer_idx: int = 0,
+                 d_c: int = None, d_c_q: int = None, max_len: int = 4096):
+        super().__init__()
+        self.n_heads = n_heads
+        self.d_head  = d // n_heads
+        self.d_h_R   = self.d_head // 2
+        self.d = d
+
+        if d_c is None:
+            d_c = d // 2
+        if d_c_q is None:
+            d_c_q = d // 2
+        self.d_c, self.d_c_q = d_c, d_c_q
+
+        nh, dh, d_h_R = n_heads, self.d_head, self.d_h_R
+
+        # KV compression — no kv_norm; input already on unit sphere
+        self.W_DKV = nn.Linear(d, d_c,       bias=False)
+        self.W_UK  = nn.Linear(d_c, nh * dh, bias=False)
+        self.W_UV  = nn.Linear(d_c, nh * dh, bias=False)
+
+        # Q compression — no q_norm; doubled heads for Diff V2 GQA pairing
+        self.W_DQ  = nn.Linear(d, d_c_q,             bias=False)
+        self.W_UQ  = nn.Linear(d_c_q, 2 * nh * dh,  bias=False)
+
+        # Decoupled RoPE projections
+        self.W_QR  = nn.Linear(d_c_q, 2 * nh * d_h_R, bias=False)  # 2×nh (doubled Q)
+        self.W_KR  = nn.Linear(d, d_h_R,               bias=False)  # single shared key
+
+        # Token-specific λ (Diff V2)
+        self.W_lambda = nn.Linear(d, nh, bias=True)
+
+        self.out = nn.Linear(d, d, bias=False)
+
+        # s_qk: init √(dh + d_h_R) — scaled for full concatenated head dim
+        full_head_dim = dh + d_h_R
+        self.s_qk = nn.Parameter(torch.tensor(math.sqrt(full_head_dim)))
+
+        cos, sin = precompute_rope(d_h_R, max_len)
+        self.register_buffer("rope_cos", cos)
+        self.register_buffer("rope_sin", sin)
+
+    def forward(self, x):
+        B, L, D = x.shape
+        nh, dh, d_h_R = self.n_heads, self.d_head, self.d_h_R
+
+        # KV path — no norm; input already on unit sphere
+        c_kv = self.W_DKV(x)
+        k_c  = self.W_UK(c_kv).reshape(B, L, nh, dh).transpose(1, 2)         # [B, nh, L, dh]
+        v    = self.W_UV(c_kv).reshape(B, L, nh, dh).transpose(1, 2)
+
+        # Q path — no norm; doubled heads
+        c_q  = self.W_DQ(x)
+        q_c  = self.W_UQ(c_q).reshape(B, L, 2 * nh, dh).transpose(1, 2)     # [B, 2nh, L, dh]
+
+        # Decoupled RoPE
+        q_rope = apply_rope(
+            self.W_QR(c_q).reshape(B, L, 2 * nh, d_h_R).transpose(1, 2),
+            self.rope_cos, self.rope_sin,
+        )  # [B, 2nh, L, d_h_R]
+        k_rope = apply_rope(
+            self.W_KR(x).reshape(B, L, 1, d_h_R).transpose(1, 2),
+            self.rope_cos, self.rope_sin,
+        ).expand(B, nh, L, d_h_R)  # [B, nh, L, d_h_R]
+
+        # Concatenate content + positional per head
+        q      = torch.cat([q_c, q_rope], dim=-1)   # [B, 2nh, L, dh + d_h_R]
+        k_full = torch.cat([k_c, k_rope], dim=-1)   # [B, nh,  L, dh + d_h_R]
+
+        # L2-normalize full concatenated head vector
+        q      = F.normalize(q,      dim=-1)         # each of 2nh half-heads independently
+        k_full = F.normalize(k_full, dim=-1)         # each of nh heads independently
+
+        # GQA pairing
+        k_rep = k_full.repeat_interleave(2, dim=1)  # [B, 2nh, L, dh + d_h_R]
+        v_rep = v.repeat_interleave(2, dim=1)        # [B, 2nh, L, dh] — V not rotated
+
+        attn = F.scaled_dot_product_attention(
+            q * self.s_qk, k_rep, v_rep, is_causal=True, scale=1.0
+        )  # [B, 2nh, L, dh]
+
+        attn1 = attn[:, 0::2]   # [B, nh, L, dh]
+        attn2 = attn[:, 1::2]
+
+        lam = torch.sigmoid(self.W_lambda(x)).transpose(1, 2).unsqueeze(-1)  # [B, nh, L, 1]
+
+        out = (attn1 - lam * attn2).transpose(1, 2).reshape(B, L, D)
+        return self.out(out)
+
+
 @torch.no_grad()
 def normalize_ngpt_weights(model: nn.Module) -> None:
     """

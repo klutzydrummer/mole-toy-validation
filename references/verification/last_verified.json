@@ -43,13 +43,13 @@
     },
     "diff_attention": {
       "file_hashes": {
-        "phase1/components/diff_attention.py": "b3c9ed126ea3fba5d50941d8f40fe5a179b6e00b",
+        "phase1/components/diff_attention.py": "64502baed38faa9090d28a71a85cde3c58859278",
         "phase1/components/attention_rope_norms.py": "7cbfc1d0252d021e6561a200764276ffd381f1de",
         "phase1/components/_shared.py": "964d8d393b8b418a3d91c3ed0393661692398e8f"
       },
-      "verified_at": "2026-04-05T02:40:54Z",
+      "verified_at": "2026-04-17T04:52:26Z",
       "result": "pass",
-      "report": "references/verification/reports/"
+      "report": "references/verification/reports/phase_b_prime_diff_attention.md"
     },
     "mhc": {
       "file_hashes": {

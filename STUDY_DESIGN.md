@@ -196,6 +196,22 @@ d=512 α parameters + 1 scalar s_z. Negligible overhead.
 Identical param counts — the two variants differ in where the L2Norm renorm is applied
 within the mHC block, not in the number of parameters.
 
+### Study F — Composition gap fills
+
+| Config | Total params | Notes |
+|--------|-------------|-------|
+| `ngpt_diff_mla` | ~29.0M | nGPT + DiffMLA; completes nGPT×attention grid |
+| `diff_attn_matched_mhc` | ~28.1M | diff_attn_matched + go-mHC; d_ff=1240 parameter-matched |
+| `mol_mla` | ~30.8M | MoL + MLA; routing × KV compression cross-study |
+| `mol_diff_attn_matched` | ~30.9M | MoL + diff_attn_matched; d_ff=1240; routing × diff attn |
+| `ngpt_mol` | ~31.2M | nGPT + MoL; unit-norm makes routing = cosine similarity |
+| `mol_diff_mla` | ~32.4M | MoL + DiffMLA; completes MoL×attention 2×4 grid |
+| `ngpt_diff_attn_matched` | ~27.9M | nGPT + diff_attn_matched; controlled Q4 under unit-norm (d_ff=1240) |
+| `ngpt_diff_mla_mhc` | ~29.3M | Three-way: nGPT + DiffMLA + go-mHC (variant a: multi-sphere) |
+| `mol_diff_mla_mhc` | ~32.6M | Three-way: MoL + DiffMLA + go-mHC |
+
+Configs using `--d_ff 1240`: `diff_attn_matched_mhc`, `mol_diff_attn_matched`, `ngpt_diff_attn_matched`.
+
 ---
 
 ## 4. Required Configs
@@ -241,6 +257,20 @@ within the mHC block, not in the number of parameters.
 |--------|---------|-------|
 | `ngpt_mhc_a` | Multi-sphere (Option A): n=4 streams, each on S^{d-1} | pending |
 | `ngpt_mhc_c` | Wrap-sublayer (Option C): sphere enforced once after full mHC | pending |
+
+### Study F — Composition gap fills
+
+| Config | Purpose | Notes |
+|--------|---------|-------|
+| `ngpt_diff_mla` | nGPT + DiffMLA; completes nGPT×attention grid | pending |
+| `diff_attn_matched_mhc` | Parameter-controlled diff_attn + go-mHC | pending; d_ff=1240 |
+| `mol_mla` | MoL routing + MLA KV compression | pending |
+| `mol_diff_attn_matched` | MoL routing + parameter-matched diff_attn | pending; d_ff=1240 |
+| `ngpt_mol` | nGPT + MoL; direction-based routing on hypersphere | pending |
+| `mol_diff_mla` | MoL + DiffMLA; completes MoL×attention 2×4 grid | pending |
+| `ngpt_diff_attn_matched` | nGPT + diff_attn_matched; controlled Q4 under unit-norm | pending; d_ff=1240 |
+| `ngpt_diff_mla_mhc` | Three-way: nGPT + DiffMLA + go-mHC (variant a) | pending |
+| `mol_diff_mla_mhc` | Three-way: MoL + DiffMLA + go-mHC | pending |
 
 ### Scaling study (cross-cutting)
 
@@ -419,6 +449,13 @@ Study D — nGPT hyperspherical (Q7):
 Study E — Multi-sphere compositions (Q8):
   bash run_experiments.sh study_sphere
   Pending. Conditioned on Study D results (need ngpt baseline first).
+
+Study F — Composition gap fills:
+  bash run_experiments.sh study_compositions
+  Pending. Can run in parallel with Studies C–E.
+  ngpt_diff_mla requires Study D ngpt baseline for interpretation.
+  mol_mla / mol_diff_attn_matched: independent; compare against mol, mla, diff_attn_matched.
+  ngpt_mol: direction-based routing — compare against ngpt and mol.
 
 Scaling study (cross-cutting):
   bash run_experiments.sh phase1_scaling

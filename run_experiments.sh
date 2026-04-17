@@ -156,7 +156,8 @@ run_phase1() {
         EXTRA_FLAGS="--d_ff 1600"
     elif [ "$cfg" = "mol_single" ]; then
         EXTRA_FLAGS="--mol_rank 72"
-    elif [ "$cfg" = "diff_attn_matched" ]; then
+    elif [ "$cfg" = "diff_attn_matched" ] || [ "$cfg" = "diff_attn_matched_mhc" ] || \
+         [ "$cfg" = "mol_diff_attn_matched" ] || [ "$cfg" = "ngpt_diff_attn_matched" ]; then
         EXTRA_FLAGS="--d_ff 1240"
     fi
 
@@ -336,6 +337,16 @@ case "$TARGET" in
     # nGPT + mHC compositions (April 2026)
     run_phase1 ngpt_mhc_a
     run_phase1 ngpt_mhc_c
+    # Study F — composition gap fills (April 2026)
+    run_phase1 ngpt_diff_mla
+    run_phase1 diff_attn_matched_mhc
+    run_phase1 mol_mla
+    run_phase1 mol_diff_attn_matched
+    run_phase1 ngpt_mol
+    run_phase1 mol_diff_mla
+    run_phase1 ngpt_diff_attn_matched
+    run_phase1 ngpt_diff_mla_mhc
+    run_phase1 mol_diff_mla_mhc
 
     # Phase 2 — smoke test gates ALL configs, no exceptions
     run_smoke_test
@@ -373,6 +384,16 @@ case "$TARGET" in
     # nGPT + mHC compositions (April 2026)
     run_phase1 ngpt_mhc_a
     run_phase1 ngpt_mhc_c
+    # Study F — composition gap fills (April 2026)
+    run_phase1 ngpt_diff_mla
+    run_phase1 diff_attn_matched_mhc
+    run_phase1 mol_mla
+    run_phase1 mol_diff_attn_matched
+    run_phase1 ngpt_mol
+    run_phase1 mol_diff_mla
+    run_phase1 ngpt_diff_attn_matched
+    run_phase1 ngpt_diff_mla_mhc
+    run_phase1 mol_diff_mla_mhc
     ;;
 
   phase2)
@@ -454,11 +475,26 @@ case "$TARGET" in
     run_phase1 ngpt_mhc_c
     ;;
 
+  # Study F — composition gap fills
+  study_compositions)
+    run_phase1 ngpt_diff_mla
+    run_phase1 diff_attn_matched_mhc
+    run_phase1 mol_mla
+    run_phase1 mol_diff_attn_matched
+    run_phase1 ngpt_mol
+    run_phase1 mol_diff_mla
+    run_phase1 ngpt_diff_attn_matched
+    run_phase1 ngpt_diff_mla_mhc
+    run_phase1 mol_diff_mla_mhc
+    ;;
+
   # Individual Phase 1 configs
   baseline | mhc | mol | compose | mla | diff_attn | diff_attn_matched | diff_mla | \
   diff_mhc | mla_mhc | diff_mla_mhc | \
   ngpt | ngpt_mla | ngpt_diff_attn | \
-  ngpt_mhc_a | ngpt_mhc_c)
+  ngpt_mhc_a | ngpt_mhc_c | \
+  ngpt_diff_mla | mol_mla | ngpt_mol | \
+  mol_diff_mla | ngpt_diff_mla_mhc | mol_diff_mla_mhc)
     run_phase1 "$TARGET"
     ;;
 
@@ -468,6 +504,18 @@ case "$TARGET" in
 
   mol_single)
     run_phase1 mol_single
+    ;;
+
+  diff_attn_matched_mhc)
+    run_phase1 diff_attn_matched_mhc
+    ;;
+
+  mol_diff_attn_matched)
+    run_phase1 mol_diff_attn_matched
+    ;;
+
+  ngpt_diff_attn_matched)
+    run_phase1 ngpt_diff_attn_matched
     ;;
 
   # Individual Phase 2 configs (standard, 50k steps)

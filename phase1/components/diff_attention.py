@@ -12,7 +12,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from phase1.components._shared import apply_rope, precompute_rope
+from phase1.components._shared import RMSNorm, apply_rope, precompute_rope
 
 
 class DifferentialCausalAttention(nn.Module):
@@ -96,21 +96,31 @@ class DiffMLAAttention(nn.Module):
     """
     Differential Attention V2 + MLA KV compression — novel composition.
 
-    MLA component (arXiv:2405.04434, DeepSeek-V2):
-      c_KV = x @ W_DKV                [B, L, d_c]
-      K    = c_KV @ W_UK              [B, L, n·dh]  — single K (shared by Q pair)
-      V    = c_KV @ W_UV              [B, L, n·dh]  — standard width (V2: not doubled)
+    Updated April 2026 to match the updated MLA spec (mla_attention.md):
+      - d_c = d//2 (was d//4; d//4 degrades quality per arXiv:2506.09342)
+      - Decoupled RoPE (Eq. 14-19 of arXiv:2405.04434): content + positional concatenated per head
+      - RMSNorm at both KV and Q latent bottlenecks (paper recommendation for stability)
 
-    Q with low-rank latent, doubled for Diff V2 GQA pairing:
-      c_Q  = x @ W_DQ                 [B, L, d_c_q]
-      Q    = c_Q @ W_UQ               [B, L, 2·n·dh]  — 2h query heads
+    MLA KV path (Eq. 9-11):
+      c_KV   = RMSNorm(x @ W_DKV)         [B, L, d_c]
+      K_C    = c_KV @ W_UK                [B, L, n·dh]   — content key (no RoPE)
+      V      = c_KV @ W_UV                [B, L, n·dh]   — standard width (V2: not doubled)
 
-    Diff V2 λ: token-specific sigmoid projection (not static exp reparameterization).
+    MLA Q path (Eq. 12-13), doubled for Diff V2 GQA pairing:
+      c_Q    = RMSNorm(x @ W_DQ)          [B, L, d_c_q]
+      Q_C    = c_Q @ W_UQ                 [B, L, 2·n·dh] — content queries (no RoPE, 2h heads)
 
-    RoPE applied to all Q heads and K at full d_head.
-    No per-head RMSNorm (V2 change: removes gradient instability at scale).
+    Decoupled RoPE (Eq. 14-19):
+      Q_R    = RoPE(c_Q @ W_QR)           [B, L, 2·n·d_h_R]  — W_QR outputs 2h heads (doubled Q)
+      K_R    = RoPE(x @ W_KR)             [B, L, 1·d_h_R]    — single shared positional key
+      Q      = [Q_C; Q_R]   per head: dh + d_h_R
+      K      = [K_C; K_R]   per head: dh + d_h_R
 
-    KV compression ratio: d_c / d_model (default 1/4 at toy scale).
+    Diff V2 λ: token-specific sigmoid projection.
+    No per-head RMSNorm (V2 change).
+
+    KV compression: d_c = d//2 (2× compression, same as standalone MLA).
+    d_h_R = d_head // 2 (= 32 at d=512) — decoupled RoPE per-head positional dim.
     """
 
     def __init__(self, d: int, n_heads: int, layer_idx: int = 0,
@@ -118,55 +128,79 @@ class DiffMLAAttention(nn.Module):
         super().__init__()
         self.n_heads = n_heads
         self.d_head  = d // n_heads
+        self.d_h_R   = self.d_head // 2  # decoupled RoPE per-head dim (32 at d=512)
         self.d = d
 
         if d_c is None:
-            d_c = d // 4    # KV latent dim — 128 at d=512
+            d_c = d // 2    # KV latent dim — 256 at d=512 (updated from d//4)
         if d_c_q is None:
             d_c_q = d // 2  # Q latent dim  — 256 at d=512
         self.d_c, self.d_c_q = d_c, d_c_q
 
-        nh, dh = n_heads, self.d_head
+        nh, dh, d_h_R = n_heads, self.d_head, self.d_h_R
 
-        # MLA KV: single K and V (V2: V no longer doubled in width)
-        self.W_DKV = nn.Linear(d, d_c,      bias=False)
-        self.W_UK  = nn.Linear(d_c, nh * dh, bias=False)
-        self.W_UV  = nn.Linear(d_c, nh * dh, bias=False)
+        # MLA KV compression (Eq. 9-11) with RMSNorm at bottleneck
+        self.W_DKV  = nn.Linear(d, d_c,       bias=False)
+        self.kv_norm = RMSNorm(d_c)
+        self.W_UK   = nn.Linear(d_c, nh * dh, bias=False)
+        self.W_UV   = nn.Linear(d_c, nh * dh, bias=False)
 
-        # MLA Q: doubled heads for Diff V2 GQA pairing
-        self.W_DQ  = nn.Linear(d, d_c_q,          bias=False)
-        self.W_UQ  = nn.Linear(d_c_q, 2 * nh * dh, bias=False)
+        # MLA Q: doubled heads for Diff V2 GQA pairing, with RMSNorm at bottleneck
+        self.W_DQ   = nn.Linear(d, d_c_q,              bias=False)
+        self.q_norm  = RMSNorm(d_c_q)
+        self.W_UQ   = nn.Linear(d_c_q, 2 * nh * dh,   bias=False)
+
+        # Decoupled RoPE projections (Eq. 14-15)
+        # W_QR: 2×nh positional queries from Q latent (doubled because Q is doubled)
+        self.W_QR   = nn.Linear(d_c_q, 2 * nh * d_h_R, bias=False)
+        # W_KR: single shared positional key from input (broadcast to all nh heads)
+        self.W_KR   = nn.Linear(d, d_h_R,               bias=False)
 
         # Token-specific λ projection (Diff V2)
         self.W_lambda = nn.Linear(d, nh, bias=True)
 
         self.out = nn.Linear(d, d, bias=False)
 
-        cos, sin = precompute_rope(dh, max_len)
+        # RoPE buffers sized for d_h_R (decoupled positional dim), not d_head
+        cos, sin = precompute_rope(d_h_R, max_len)
         self.register_buffer("rope_cos", cos)
         self.register_buffer("rope_sin", sin)
 
     def forward(self, x):
         B, L, D = x.shape
-        nh, dh = self.n_heads, self.d_head
+        nh, dh, d_h_R = self.n_heads, self.d_head, self.d_h_R
 
-        # KV path: compress → K [B, nh, L, dh], V [B, nh, L, dh]
-        c_kv = self.W_DKV(x)
-        k = self.W_UK(c_kv).reshape(B, L, nh, dh).transpose(1, 2)
-        v = self.W_UV(c_kv).reshape(B, L, nh, dh).transpose(1, 2)
+        # KV path: compress → norm → expand
+        c_kv = self.kv_norm(self.W_DKV(x))                                   # [B, L, d_c]
+        k_c  = self.W_UK(c_kv).reshape(B, L, nh, dh).transpose(1, 2)        # [B, nh, L, dh]
+        v    = self.W_UV(c_kv).reshape(B, L, nh, dh).transpose(1, 2)        # [B, nh, L, dh]
 
-        # Q path: compress → Q [B, 2·nh, L, dh]
-        c_q = self.W_DQ(x)
-        q   = self.W_UQ(c_q).reshape(B, L, 2 * nh, dh).transpose(1, 2)
+        # Q path: compress → norm → doubled expand (content part)
+        c_q  = self.q_norm(self.W_DQ(x))                                     # [B, L, d_c_q]
+        q_c  = self.W_UQ(c_q).reshape(B, L, 2 * nh, dh).transpose(1, 2)    # [B, 2nh, L, dh]
 
-        q = apply_rope(q, self.rope_cos, self.rope_sin)
-        k = apply_rope(k, self.rope_cos, self.rope_sin)
+        # Decoupled RoPE (Eq. 14-15)
+        # Q_R: 2nh positional queries (one per doubled Q head)
+        q_rope = apply_rope(
+            self.W_QR(c_q).reshape(B, L, 2 * nh, d_h_R).transpose(1, 2),
+            self.rope_cos, self.rope_sin,
+        )  # [B, 2nh, L, d_h_R]
+        # K_R: single shared positional key, broadcast to all nh heads
+        k_rope = apply_rope(
+            self.W_KR(x).reshape(B, L, 1, d_h_R).transpose(1, 2),
+            self.rope_cos, self.rope_sin,
+        ).expand(B, nh, L, d_h_R)  # [B, nh, L, d_h_R]
 
-        # Repeat KV heads to match doubled Q (GQA pairing)
-        k_rep = k.repeat_interleave(2, dim=1)  # [B, 2·nh, L, dh]
-        v_rep = v.repeat_interleave(2, dim=1)
+        # Concatenate content + positional (Eq. 16-17): per-head dim = dh + d_h_R
+        q     = torch.cat([q_c, q_rope], dim=-1)              # [B, 2nh, L, dh + d_h_R]
+        k_full = torch.cat([k_c, k_rope], dim=-1)             # [B, nh,  L, dh + d_h_R]
+
+        # GQA pairing: repeat K,V to match doubled Q heads
+        k_rep = k_full.repeat_interleave(2, dim=1)            # [B, 2nh, L, dh + d_h_R]
+        v_rep = v.repeat_interleave(2, dim=1)                 # [B, 2nh, L, dh] — V not rotated
 
         attn = F.scaled_dot_product_attention(q, k_rep, v_rep, is_causal=True)
+        # SDPA outputs V's head dim: [B, 2nh, L, dh]
 
         attn1 = attn[:, 0::2]  # [B, nh, L, dh]
         attn2 = attn[:, 1::2]
